@@ -149,7 +149,16 @@ impl OKXClient {
         let code = resp_json.get("code").and_then(|v| v.as_str()).unwrap_or("");
         if code != "0" {
             let msg = resp_json.get("msg").and_then(|v| v.as_str()).unwrap_or("Unknown OKX error");
-            return Err(anyhow!("OKX API error [{}]: {}", code, msg));
+            let mut s_code = "";
+            let mut s_msg = "";
+            if let Some(arr) = resp_json.get("data").and_then(|v| v.as_array()) {
+                if let Some(first) = arr.first() {
+                    s_code = first.get("sCode").and_then(|v| v.as_str()).unwrap_or("");
+                    s_msg = first.get("sMsg").and_then(|v| v.as_str()).unwrap_or("");
+                }
+            }
+            let err_text = format_okx_trade_error(code, msg, s_code, s_msg);
+            return Err(anyhow!("{}", err_text));
         }
 
         let data = resp_json.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -280,7 +289,8 @@ impl OKXClient {
         let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("OKX rejected order");
-            return Err(anyhow!("OKX order failed [{}]: {}", s_code, s_msg));
+            let err_text = format_okx_trade_error("1", "All operations failed", s_code, s_msg);
+            return Err(anyhow!("{}", err_text));
         }
         Ok(result)
     }
@@ -291,7 +301,8 @@ impl OKXClient {
         let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("OKX rejected algo order");
-            return Err(anyhow!("OKX algo order failed [{}]: {}", s_code, s_msg));
+            let err_text = format_okx_trade_error("1", "All operations failed", s_code, s_msg);
+            return Err(anyhow!("{}", err_text));
         }
         Ok(result)
     }
@@ -329,3 +340,27 @@ impl OKXClient {
         Ok(result)
     }
 }
+
+pub fn format_okx_trade_error(code: &str, msg: &str, s_code: &str, s_msg: &str) -> String {
+    let specific_cn = match s_code {
+        "51008" => "账户可用余额/保证金不足（请检查 USDT 余额或在配置中降低下单数量）",
+        "51004" => "持仓模式与订单参数不匹配（请在 OKX 或配置中统一单向/双向持仓模式）",
+        "51000" => "参数错误（请检查该品种的最小下单量或步长）",
+        "51006" => "委托价格偏离当前市场行情幅度过大",
+        "51020" => "杠杆倍数超出限制或未开通对应交易权限",
+        "50014" => "现货全仓模式下币种参数不匹配",
+        "51012" => "当前合约已暂停交易或处于交割状态",
+        _ => "",
+    };
+
+    if !s_code.is_empty() && s_code != "0" {
+        if !specific_cn.is_empty() {
+            format!("OKX 接口错误 [{}]: {} (详细: {})", s_code, specific_cn, s_msg)
+        } else {
+            format!("OKX 接口错误 [{}]: {}", s_code, s_msg)
+        }
+    } else {
+        format!("OKX 接口错误 [{}]: {}", code, msg)
+    }
+}
+
