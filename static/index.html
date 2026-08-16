@@ -45,6 +45,7 @@
           </select>
         </label>
         <button id="refreshButton" class="icon-button" title="刷新行情" aria-label="刷新行情">↻</button>
+        <span id="instTypeBadge" class="inst-type-badge swap">⚡ 永续合约 (按张数下单)</span>
         <div class="analysis-controls">
           <div class="analysis-copy">
             <strong>两阶段价格行为分析</strong>
@@ -303,9 +304,18 @@
           <label class="switch"><input id="automationSwitch" type="checkbox"><span></span></label>
         </section>
         <div class="risk-summary">
+          <div><small>监控品种</small><b id="autoSymbol">—</b></div>
           <div><small>信心门槛</small><b id="riskConfidence">—</b></div>
           <div><small>固定数量</small><b id="orderSize">—</b></div>
           <div><small>账户模式</small><b id="tradeMode">—</b></div>
+        </div>
+        <!-- 现货与合约交易提示卡片 -->
+        <div class="swap-reminder-card">
+          <span class="reminder-icon">💡</span>
+          <div class="reminder-text">
+            <strong>品种与下单提示</strong>
+            <p>• <b>合约交易（推荐）</b>：请选择带 <code>-SWAP</code> 的品种（如 <code>BTC-USDT-SWAP</code>），支持杠杆，按张数下单。<br>• <b>现货交易</b>：不带 <code>-SWAP</code>（如 <code>BTC-USDT</code>）为全额现货，需准备足额 USDT 现金。</p>
+          </div>
         </div>
         <section class="session-section">
           <div class="session-head">

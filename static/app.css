@@ -263,4 +263,17 @@
 .confirm-input-pulse{animation:confirmShakePulse .4s ease-in-out 3;border-color:var(--red)!important;box-shadow:0 0 14px rgba(240,91,103,0.7)!important}
 @keyframes confirmShakePulse{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
 
+/* 顶部工具栏产品模式动态徽章 */
+.inst-type-badge{font-size:11px;font-weight:700;padding:4px 9px;border-radius:4px;display:inline-flex;align-items:center;white-space:nowrap;margin-left:2px}
+.inst-type-badge.swap{background:rgba(31,196,141,0.12);color:var(--green);border:1px solid rgba(31,196,141,0.35)}
+.inst-type-badge.spot{background:rgba(231,173,69,0.12);color:var(--amber);border:1px solid rgba(231,173,69,0.35)}
+
+/* 自动交易与主面板合约提示卡片 */
+.swap-reminder-card{background:rgba(20,28,34,0.85);border:1px solid #283742;border-left:3px solid #388bfd;border-radius:6px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;margin-bottom:12px;font-size:11px;line-height:1.5}
+.swap-reminder-card .reminder-icon{font-size:16px;line-height:1}
+.swap-reminder-card .reminder-text strong{display:block;font-size:12px;color:#79c0ff;margin-bottom:4px}
+.swap-reminder-card .reminder-text p{margin:0;color:#9eb0bd}
+.swap-reminder-card .reminder-text code{background:#10171f;color:#e1eaf0;padding:1px 5px;border-radius:3px;font-family:Consolas,monospace;border:1px solid #223240}
+
+
 

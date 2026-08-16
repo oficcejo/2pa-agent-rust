@@ -188,9 +188,16 @@ async function loadStatus() {
   const brokerTagElement = $("brokerTag");
   if (brokerTagElement) brokerTagElement.textContent = statusData.broker_tag;
   renderAutomationStatus(statusData);
+  const isSwap = String(statusData.symbol || "").endsWith("-SWAP");
+  const autoSymbol = $("autoSymbol");
+  if (autoSymbol) {
+    autoSymbol.innerHTML = isSwap
+      ? `<span style="color:var(--green)">${escapeHtml(statusData.symbol || "—")} (合约)</span>`
+      : `<span style="color:var(--amber)">${escapeHtml(statusData.symbol || "—")} (现货)</span>`;
+  }
   const riskConfidence = $("riskConfidence");
   if (riskConfidence) riskConfidence.textContent = `${statusData.confidence_threshold}%`;
-  const orderSizeUnit = String(statusData.symbol || "").endsWith("-SWAP") ? "contracts" : "base units";
+  const orderSizeUnit = isSwap ? "contracts (张)" : "base units (个)";
   const orderSize = $("orderSize");
   if (orderSize) orderSize.textContent = `${statusData.default_order_size} ${orderSizeUnit}`;
   const tradeMode = $("tradeMode");
@@ -200,7 +207,23 @@ async function loadStatus() {
     const code = statusData.mode === "demo" ? "ENABLE DEMO" : "ENABLE LIVE";
     confirmation.placeholder = `请在此输入 ${code} 确认开启`;
   }
+  updateInstTypeBadge();
   if (statusData.latest) renderDecision(statusData.latest);
+}
+
+function updateInstTypeBadge() {
+  const symbol = $("symbol").value.trim().toUpperCase();
+  const isSwap = symbol.endsWith("-SWAP") || $("instType").value === "SWAP";
+  const badge = $("instTypeBadge");
+  if (badge) {
+    if (isSwap) {
+      badge.textContent = "⚡ 永续合约 (按张数/支持杠杆)";
+      badge.className = "inst-type-badge swap";
+    } else {
+      badge.textContent = "🪙 现货币币 (全额现货/需足额现金)";
+      badge.className = "inst-type-badge spot";
+    }
+  }
 }
 
 async function loadInstruments() {
@@ -328,6 +351,7 @@ async function changeInstrumentType() {
 }
 
 async function loadCandles() {
+  updateInstTypeBadge();
   const symbol = $("symbol").value.trim().toUpperCase();
   const timeframe = $("timeframe").value;
   $("chartEmpty").style.display = "grid";
