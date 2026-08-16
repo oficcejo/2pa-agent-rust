@@ -506,8 +506,8 @@ impl OKXTradeExecutor {
             0.0
         };
 
-        // 允许的最大过期秒数：至少为 max_signal_age_seconds，并适配周期时长
-        let max_age_allowed = (self.max_signal_age_seconds as f64).max(tf_seconds as f64);
+        // 允许的最大过期秒数：以最大挂单保留 K 线数 (max_pending_bars) 乘以周期时长为基准，确保在有效窗口内均可正常下单
+        let max_age_allowed = ((self.max_pending_bars.max(1) as u64) * tf_seconds).max(self.max_signal_age_seconds) as f64;
 
         if age_since_close_seconds > max_age_allowed {
             let res = ExecutionResult {
