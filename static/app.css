@@ -58,6 +58,10 @@
   .positions-table th:nth-child(4),.positions-table td:nth-child(4){width:25%}
   .orders-table th:first-child,.orders-table td:first-child{width:31%}
   .orders-table th:nth-child(2),.orders-table td:nth-child(2){width:23%}
+  .homepage-star-banner{flex-direction:column;align-items:flex-start;gap:12px;padding:12px 14px}
+  .star-banner-actions{width:100%;justify-content:flex-start}
+  .github-star-topbar .gh-text{display:none}
+  .community-link-topbar{display:none}
 }
 
 .market-panel{grid-template-rows:auto auto minmax(340px,1fr)}
@@ -274,6 +278,28 @@
 .swap-reminder-card .reminder-text strong{display:block;font-size:12px;color:#79c0ff;margin-bottom:4px}
 .swap-reminder-card .reminder-text p{margin:0;color:#9eb0bd}
 .swap-reminder-card .reminder-text code{background:#10171f;color:#e1eaf0;padding:1px 5px;border-radius:3px;font-family:Consolas,monospace;border:1px solid #223240}
+
+/* 顶部 GitHub Star 按钮与交流群链接 */
+.github-star-topbar{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(180deg,#1b2024 0%,#131719 100%);color:#e6edf3;border:1px solid #333c42;border-radius:4px;padding:4px 10px;font-size:12px;font-weight:600;text-decoration:none;transition:all .2s ease;box-shadow:0 1px 3px rgba(0,0,0,0.3)}
+.github-star-topbar:hover{background:linear-gradient(180deg,#242b30 0%,#171d20 100%);border-color:#ffd166;color:#fff;box-shadow:0 0 12px rgba(255,209,102,0.35);transform:translateY(-1px)}
+.github-star-topbar .gh-icon{color:#e6edf3}
+.github-star-topbar .gh-star-badge{background:rgba(231,173,69,0.18);color:#ffd166;border:1px solid rgba(231,173,69,0.5);padding:1px 6px;border-radius:3px;font-size:11px;font-weight:700}
+.community-link-topbar{display:inline-flex;align-items:center;gap:4px;background:#15191b;color:#9cb0ba;border:1px solid #2d363b;border-radius:4px;padding:4px 9px;font-size:12px;font-weight:600;text-decoration:none;transition:all .2s ease}
+.community-link-topbar:hover{background:#1b2226;border-color:#5865F2;color:#7983f5;box-shadow:0 0 10px rgba(88,101,242,0.3)}
+
+/* 首页快速 Star 引导条（醒目） */
+.homepage-star-banner{background:linear-gradient(90deg,rgba(231,173,69,0.08) 0%,rgba(20,28,34,0.95) 50%,rgba(31,196,141,0.08) 100%);border-top:1px solid #293238;padding:10px 18px;display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:52px}
+.star-banner-left{display:flex;align-items:center;gap:10px}
+.star-badge-icon{font-size:22px;line-height:1}
+.star-banner-text strong{display:block;font-size:12px;color:#ffd166;font-weight:700}
+.star-banner-text small{display:block;font-size:11px;color:#94a4ae;margin-top:2px}
+.star-banner-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.star-action-btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:700;text-decoration:none;transition:all .2s ease;white-space:nowrap}
+.star-action-btn.github-btn{background:linear-gradient(180deg,#ffd166 0%,#e0ab32 100%);color:#111416;border:1px solid #ffde8a;box-shadow:0 2px 8px rgba(231,173,69,0.3)}
+.star-action-btn.github-btn:hover{background:linear-gradient(180deg,#ffe082 0%,#e7ad45 100%);box-shadow:0 0 14px rgba(255,209,102,0.6);transform:translateY(-1px)}
+.star-action-btn.discord-btn{background:#181d22;color:#b0c2cc;border:1px solid #323d45}
+.star-action-btn.discord-btn:hover{background:#20272e;border-color:#5865F2;color:#fff}
+
 
 
 
