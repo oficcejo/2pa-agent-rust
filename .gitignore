@@ -57,3 +57,8 @@ temp/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# 宣传视频与多媒体制作物料（不推送到仓库）
+promo_video/
+promo_materials/
+
