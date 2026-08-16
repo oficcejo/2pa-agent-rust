@@ -7,8 +7,8 @@
 
 **OKX 2PA Agent** 是一款基于 **Al Brooks 价格行为学（Price Action）理论** 与 **大语言模型（LLM）两阶段智能推理** 的高频/日内量化交易系统。
 
-本项目采用 **纯 Rust** 进行重构与极致性能优化，支持编译为**单文件独立可执行程序**（Windows `.exe` / Linux 二进制），内嵌 Web 控制台与全部交易策略 Prompt，实现零外部运行时依赖（无需 Python、Node.js 等环境）即开即用。
-
+本项目采用 **纯 Rust** 进行重构与极致性能优化，支持编译为**单文件独立可执行程序**（Windows `.exe` / Linux 二进制 右侧Releases可直接下载exe运行），内嵌 Web 控制台与全部交易策略 Prompt，实现零外部运行时依赖（无需 Python、Node.js 等环境）即开即用。
+discord交流群https://discord.gg/jk4mnW53gK
 ---
 
 ## 🌟 核心特性与功能亮点

@@ -1,3 +1,4 @@
+use crate::data::timeframe_to_seconds;
 use crate::okx::client::OKXClient;
 use crate::util::timefmt::now_local_ms;
 use anyhow::{anyhow, Result};
@@ -492,16 +493,29 @@ impl OKXTradeExecutor {
         decision: &Value,
     ) -> ExecutionResult {
         let signal_id = Self::generate_signal_id(inst_id, timeframe, signal_ts_ms, decision);
+        
+        let tf_seconds = timeframe_to_seconds(timeframe).unwrap_or(300);
+        let bar_duration_ms = (tf_seconds as i64) * 1000;
+        let bar_close_ts_ms = signal_ts_ms + bar_duration_ms;
         let now_ms = now_local_ms();
-        let age_seconds = ((now_ms - signal_ts_ms).max(0) as f64) / 1000.0;
 
-        if age_seconds > (self.max_signal_age_seconds as f64) {
+        // 计算自该 K 线闭合时刻起经过的实际秒数（若本地时间落后则按 0 处理）
+        let age_since_close_seconds = if now_ms > bar_close_ts_ms {
+            ((now_ms - bar_close_ts_ms) as f64) / 1000.0
+        } else {
+            0.0
+        };
+
+        // 允许的最大过期秒数：至少为 max_signal_age_seconds，并适配周期时长
+        let max_age_allowed = (self.max_signal_age_seconds as f64).max(tf_seconds as f64);
+
+        if age_since_close_seconds > max_age_allowed {
             let res = ExecutionResult {
                 submitted: false,
                 signal_id: signal_id.clone(),
                 request: Value::Null,
                 response: None,
-                reason: "信号已过期 (K线生成时间已超时)".to_string(),
+                reason: format!("信号已过期 (K线闭合距今已过 {:.0} 秒，超过最大容许时效 {:.0} 秒)", age_since_close_seconds, max_age_allowed),
                 error_code: String::new(),
                 broker_tag: BROKER_TAG.to_string(),
             };
