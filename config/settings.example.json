@@ -1,0 +1,15 @@
+{
+  "general": {
+    "analysis_bar_count": 100,
+    "decision_confidence_threshold": 40,
+    "decision_stance": "balanced"
+  },
+  "prompt": {
+    "experience_max_entries": 0
+  },
+  "validation": {
+    "normalization_mode": "lenient",
+    "retry_enabled": true,
+    "retry_max": 3
+  }
+}

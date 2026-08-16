@@ -1,0 +1,59 @@
+# =============================================================================
+# OKX 2PA Agent (Rust 版) Git 忽略规则
+# =============================================================================
+
+# Rust 编译产物与目标目录
+/target/
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+*.rlib
+*.rmeta
+*.rs.bk
+
+# 本地环境变量与私密密钥（严禁提交）
+.env
+.env.*
+!.env.example
+config/settings.local.json
+config/secret.key
+config/exception_state.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# 运行数据、交易审计与日志记录
+/logs/*
+!/logs/.gitkeep
+/records/*.json
+/records/pending/*.json
+/records/*.jsonl
+/records/**/*.json
+!/records/.gitkeep
+!/records/pending/.gitkeep
+/trade_records/
+*.log
+*.log.*
+*.jsonl
+
+# 临时与备份文件
+tmp/
+temp/
+.tmp/
+*.tmp
+*.bak
+*.swp
+*.swo
+~$*
+
+# 编辑器与操作系统专属文件
+.idea/
+.vscode/
+.cursor/
+.agents/
+.DS_Store
+Thumbs.db
+Desktop.ini

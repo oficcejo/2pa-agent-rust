@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>okx-2pa-agent-web</title>
+  <link rel="stylesheet" href="/static/app.css?v=__ASSET_VERSION__">
+  <style>@media(max-width:600px){.status-row #credentialBadge{display:none}}</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">2P</span>
+      <div><strong>okx-2pa-agent-web</strong><small>AI Trading</small></div>
+    </div>
+    <div class="status-row">
+      <span id="modeBadge" class="badge">连接中</span>
+      <span id="credentialBadge" class="badge muted">API 未检查</span>
+      <button id="configButton" class="config-btn" type="button" title="打开系统配置">⚙️ 系统配置</button>
+      <span class="id">自担投资风险</span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="market-panel">
+      <div class="toolbar">
+        <label>产品
+          <select id="instType">
+            <option value="SPOT">现货</option>
+            <option value="SWAP">永续 / TradFi</option>
+          </select>
+        </label>
+        <label>品种
+          <div class="symbol-control">
+            <input id="symbol" value="BTC-USDT" autocomplete="off" role="combobox"
+              aria-autocomplete="list" aria-controls="instrumentMenu" aria-expanded="false">
+            <button id="symbolToggle" class="symbol-toggle" type="button" title="展开品种" aria-label="展开品种">▾</button>
+            <div id="instrumentMenu" class="instrument-menu" role="listbox" hidden></div>
+          </div>
+        </label>
+        <label>周期
+          <select id="timeframe">
+            <option>1m</option><option>5m</option><option selected>15m</option>
+            <option>30m</option><option>1h</option><option>4h</option><option>1d</option>
+          </select>
+        </label>
+        <button id="refreshButton" class="icon-button" title="刷新行情" aria-label="刷新行情">↻</button>
+        <div class="analysis-controls">
+          <div class="analysis-copy">
+            <strong>两阶段价格行为分析</strong>
+            <span id="analysisState">等待分析</span>
+          </div>
+          <label class="execute-check"><input id="executeAfterAnalysis" type="checkbox"> 分析后按风控执行</label>
+          <button id="analyzeButton" class="primary">运行 AI 分析</button>
+        </div>
+      </div>
+
+      <div class="quote-strip">
+        <div><small>最新价</small><strong id="lastPrice">—</strong></div>
+        <div><small>本周期</small><strong id="periodChange">—</strong></div>
+        <div><small>最高</small><strong id="highPrice">—</strong></div>
+        <div><small>最低</small><strong id="lowPrice">—</strong></div>
+        <div><small>成交量</small><strong id="volume">—</strong></div>
+      </div>
+
+      <div id="chart" class="chart"><canvas id="chartCanvas"></canvas><div id="chartEmpty">加载 OKX 行情…</div></div>
+
+    </section>
+
+    <aside class="side-panel">
+      <nav class="tabs">
+        <button class="active" data-tab="decision">决策</button>
+        <button data-tab="account">账户</button>
+        <button data-tab="contract">📐 合约换算</button>
+        <button data-tab="automation" class="tab-highlight">🤖 自动交易</button>
+      </nav>
+
+      <div id="decisionTab" class="tab-content active">
+        <div class="decision-head">
+          <span id="decisionDirection" class="direction neutral">待分析</span>
+          <span id="confidence">信心 —</span>
+        </div>
+        <dl class="decision-grid">
+          <div><dt>订单类型</dt><dd id="orderType">—</dd></div>
+          <div><dt>入场</dt><dd id="entryPrice">—</dd></div>
+          <div><dt>止损</dt><dd id="stopPrice">—</dd></div>
+          <div><dt>目标一</dt><dd id="targetPrice">—</dd></div>
+          <div><dt>目标二</dt><dd id="target2Price">—</dd></div>
+          <div><dt>胜率估计</dt><dd id="winRate">—</dd></div>
+        </dl>
+        <section class="plain-section"><h2>判断依据</h2><p id="reasoning">尚无 AI 决策。</p></section>
+        <section class="plain-section"><h2>执行结果</h2><pre id="executionResult">未提交订单</pre></section>
+        <section class="history-section">
+          <div class="history-head">
+            <div><h2>决策记录</h2><span id="decisionHistoryCount">0 条</span></div>
+            <button id="decisionHistoryRefresh" class="small-icon-button" type="button" title="刷新决策记录" aria-label="刷新决策记录">↻</button>
+          </div>
+          <div id="decisionHistoryState" class="history-state">正在读取记录</div>
+          <div id="decisionHistory" class="history-list"></div>
+        </section>
+      </div>
+
+      <div id="accountTab" class="tab-content">
+        <div class="section-title account-title">
+          <div><h2>账户</h2><span id="accountUpdated">—</span></div>
+          <button id="accountRefresh" class="icon-button" title="刷新账户" aria-label="刷新账户">↻</button>
+        </div>
+        <div id="accountState" class="empty-state">正在读取账户</div>
+        <div id="accountDashboard" class="account-dashboard" hidden>
+          <section class="account-kpis" aria-label="账户摘要">
+            <div class="account-kpi primary-kpi">
+              <small>总权益</small>
+              <strong id="totalEquity">—</strong>
+              <span>USD</span>
+            </div>
+            <div class="account-kpi">
+              <small>可用权益</small>
+              <strong id="availableEquity">—</strong>
+            </div>
+            <div class="account-kpi">
+              <small>未实现盈亏</small>
+              <strong id="accountUpl">—</strong>
+            </div>
+          </section>
+
+          <section class="account-section equity-section">
+            <div class="account-section-head"><h2>总权益曲线</h2><span id="equityRange">—</span></div>
+            <div class="equity-chart">
+              <canvas id="equityCanvas"></canvas>
+              <div id="equityEmpty" class="chart-placeholder">暂无历史数据</div>
+            </div>
+          </section>
+
+          <section class="account-section">
+            <div class="account-section-head"><h2>资产</h2><span id="balanceCount">0</span></div>
+            <div class="compact-table-wrap">
+              <table class="compact-table">
+                <thead><tr><th>币种</th><th>权益</th><th>可用</th><th>冻结</th></tr></thead>
+                <tbody id="balancesBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="account-section">
+            <div class="account-section-head"><h2>仓位</h2><span id="positionCount">0</span></div>
+            <div class="compact-table-wrap">
+              <table class="compact-table positions-table">
+                <thead><tr><th>品种</th><th>数量</th><th>均价 / 标记</th><th>未实现盈亏</th></tr></thead>
+                <tbody id="positionsBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="account-section">
+            <div class="account-section-head"><h2>挂单</h2><span id="orderCount">0</span></div>
+            <div class="compact-table-wrap">
+              <table class="compact-table orders-table">
+                <thead><tr><th>品种</th><th>类型</th><th>数量</th><th>价格</th></tr></thead>
+                <tbody id="ordersBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div id="contractTab" class="tab-content">
+        <div class="section-title contract-head-title">
+          <div>
+            <h2>📐 合约规格与张数换算</h2>
+            <span class="sub-label">实时查询 1 张面值、折合 USDT 价值及下单换算</span>
+          </div>
+          <button id="contractRefreshBtn" class="icon-button" title="刷新合约行情" aria-label="刷新合约行情">↻</button>
+        </div>
+
+        <!-- 实时品种查询与即时换算计算器 -->
+        <section class="contract-calc-card">
+          <div class="calc-symbol-search-row">
+            <label class="full-field">查询或切换合约品种
+              <div class="search-input-wrap">
+                <input id="calcSymbolInput" type="text" placeholder="如 BTC-USDT-SWAP, SOL-USDT-SWAP, PEPE-USDT-SWAP" value="BTC-USDT-SWAP" autocomplete="off">
+                <button id="calcSymbolSearchBtn" class="small-action" type="button">查询换算</button>
+              </div>
+            </label>
+          </div>
+
+          <div id="contractSpecDisplay" class="spec-display-box">
+            <div class="spec-header-row">
+              <div>
+                <strong id="specInstId" class="spec-title">BTC-USDT-SWAP</strong>
+                <span id="specCategoryBadge" class="badge">永续合约</span>
+              </div>
+              <div class="spec-live-price">
+                <small>实时最新价</small>
+                <strong id="specLastPrice">— USDT</strong>
+              </div>
+            </div>
+
+            <!-- 核心面值与价值展示 -->
+            <div class="spec-kpis">
+              <div class="spec-kpi highlight">
+                <small>1 张合约面值</small>
+                <strong id="specCtVal">0.01 BTC</strong>
+              </div>
+              <div class="spec-kpi highlight accent">
+                <small>1 张当前约合</small>
+                <strong id="specUsdtPerCt">≈ 0.00 USDT</strong>
+              </div>
+            </div>
+
+            <div class="spec-meta-grid">
+              <div><small>最小下单张数</small><b id="specMinSz">1 张</b></div>
+              <div><small>下单步长 (Lot)</small><b id="specLotSz">1 张</b></div>
+              <div><small>最高可用杠杆</small><b id="specMaxLev">100x</b></div>
+              <div><small>价格最小精度</small><b id="specTickSz">0.1</b></div>
+            </div>
+          </div>
+
+          <!-- 双向实时换算器 -->
+          <div class="interactive-calc-box">
+            <div class="calc-switch-tabs">
+              <button id="calcModeUsdtBtn" class="calc-mode-btn active" type="button">💰 按 USDT 金额算张数</button>
+              <button id="calcModeContractsBtn" class="calc-mode-btn" type="button">📊 按张数算所需 USDT</button>
+            </div>
+
+            <!-- 模式 1: 按 USDT 算张数 -->
+            <div id="calcModeUsdtPanel" class="calc-mode-panel active">
+              <div class="calc-inputs-grid">
+                <label>目标交易价值 (USDT)
+                  <input id="inputTargetUsdt" type="number" step="any" min="1" value="1000" placeholder="例如 1000">
+                </label>
+                <label>计划杠杆倍数
+                  <input id="inputLeverage1" type="number" step="1" min="1" max="100" value="3">
+                </label>
+              </div>
+              <div class="calc-output-card">
+                <div class="calc-output-main">
+                  <span>💡 建议下单张数</span>
+                  <strong id="calcResContracts" class="big-res">0 张</strong>
+                </div>
+                <div class="calc-output-details">
+                  <div><span>实际仓位价值</span><b id="calcResActualUsdt">0.00 USDT</b></div>
+                  <div><span>所需保证金</span><b id="calcResMargin">0.00 USDT</b></div>
+                  <div><span>折合标的数量</span><b id="calcResCoins">0.00</b></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 模式 2: 按张数算所需 USDT -->
+            <div id="calcModeContractsPanel" class="calc-mode-panel" hidden>
+              <div class="calc-inputs-grid">
+                <label>计划下单张数
+                  <input id="inputTargetContracts" type="number" step="1" min="1" value="10" placeholder="例如 10">
+                </label>
+                <label>计划杠杆倍数
+                  <input id="inputLeverage2" type="number" step="1" min="1" max="100" value="3">
+                </label>
+              </div>
+              <div class="calc-output-card">
+                <div class="calc-output-main">
+                  <span>💵 仓位总价值 (USDT)</span>
+                  <strong id="calcResTotalUsdt" class="big-res">0.00 USDT</strong>
+                </div>
+                <div class="calc-output-details">
+                  <div><span>所需保证金</span><b id="calcResMargin2">0.00 USDT</b></div>
+                  <div><span>包含标的数量</span><b id="calcResCoins2">0.00</b></div>
+                  <div><span>单张价值</span><b id="calcResSingleVal">0.00 USDT</b></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 常见热门品种 1 张合约面值速查表 -->
+        <section class="popular-specs-container">
+          <div class="section-title">
+            <div>
+              <h2>🔥 常见热门品种 1 张面值对照表</h2>
+              <span class="sub-label">点击任意品种即可一键填入上方换算器</span>
+            </div>
+          </div>
+          <div id="popularSpecsLoading" class="history-state">正在获取 OKX 最新合约规格与实时价格...</div>
+          <div id="popularSpecsList" class="popular-specs-list"></div>
+        </section>
+      </div>
+
+      <div id="automationTab" class="tab-content">
+        <!-- 自动交易安全确认卡片（置顶高亮提醒） -->
+        <div class="confirm-security-box">
+          <div class="confirm-box-title">
+            <span class="confirm-box-icon">⚠️</span>
+            <div>
+              <strong>开启自动交易安全校验</strong>
+              <small>为防止误触开单，必须输入 <code class="confirm-code-tag">ENABLE LIVE</code> 才能开启下方开关</small>
+            </div>
+          </div>
+          <div class="confirm-input-row">
+            <input id="confirmation" placeholder="请在此输入 ENABLE LIVE 确认开启" autocomplete="off">
+          </div>
+        </div>
+
+        <section class="automation-state">
+          <div><small>运行状态</small><strong id="automationStatus">已关闭</strong></div>
+          <label class="switch"><input id="automationSwitch" type="checkbox"><span></span></label>
+        </section>
+        <div class="risk-summary">
+          <div><small>信心门槛</small><b id="riskConfidence">—</b></div>
+          <div><small>固定数量</small><b id="orderSize">—</b></div>
+          <div><small>账户模式</small><b id="tradeMode">—</b></div>
+        </div>
+        <section class="session-section">
+          <div class="session-head">
+            <div><h2>分析时段</h2><span id="sessionDescription">全天运行</span></div>
+            <span id="sessionActive" class="session-state">时段内</span>
+          </div>
+          <label>常用时段
+            <select id="sessionPreset" disabled><option>正在加载时段</option></select>
+          </label>
+          <div id="customSessionFields" class="custom-session-fields" hidden>
+            <label>时区
+              <input id="sessionTimezone" list="sessionTimezoneOptions" value="Asia/Shanghai" autocomplete="off">
+              <datalist id="sessionTimezoneOptions">
+                <option value="UTC">UTC</option>
+                <option value="Asia/Shanghai">亚洲/上海</option>
+                <option value="Asia/Tokyo">亚洲/东京</option>
+                <option value="Asia/Singapore">亚洲/新加坡</option>
+                <option value="America/New_York">美洲/纽约</option>
+                <option value="Europe/London">欧洲/伦敦</option>
+                <option value="Europe/Berlin">欧洲/柏林</option>
+                <option value="Australia/Sydney">澳洲/悉尼</option>
+              </datalist>
+            </label>
+            <div class="session-time-row">
+              <label>开始
+                <input id="sessionStart" type="time" value="09:00">
+              </label>
+              <label>结束
+                <input id="sessionEnd" type="time" value="16:00">
+              </label>
+            </div>
+            <div class="weekday-field">
+              <span>星期</span>
+              <div class="weekday-grid">
+                <label><input class="session-weekday" type="checkbox" value="0" checked>一</label>
+                <label><input class="session-weekday" type="checkbox" value="1" checked>二</label>
+                <label><input class="session-weekday" type="checkbox" value="2" checked>三</label>
+                <label><input class="session-weekday" type="checkbox" value="3" checked>四</label>
+                <label><input class="session-weekday" type="checkbox" value="4" checked>五</label>
+                <label><input class="session-weekday" type="checkbox" value="5" checked>六</label>
+                <label><input class="session-weekday" type="checkbox" value="6" checked>日</label>
+              </div>
+            </div>
+          </div>
+          <div class="session-foot">
+            <span id="sessionNextOpen">下次开放时间：—</span>
+            <button id="sessionApply" class="small-action" type="button" title="应用分析时段">应用时段</button>
+          </div>
+        </section>
+        <p class="notice">仅新收盘 K 线触发一次分析。时段外不会请求行情或调用 AI；时段内还会经过信心门槛、三价关系、最小下单量、信号时效和去重校验。</p>
+        <pre id="automationMessage">自动交易未启用</pre>
+        <section class="history-section automation-history-section">
+          <div class="history-head">
+            <div><h2>交易记录</h2><span id="tradeHistoryCount">0 条</span></div>
+            <button id="tradeHistoryRefresh" class="small-icon-button" type="button" title="刷新交易记录" aria-label="刷新交易记录">↻</button>
+          </div>
+          <div id="tradeHistoryState" class="history-state">正在读取记录</div>
+          <div id="tradeHistory" class="history-list"></div>
+        </section>
+      </div>
+    </aside>
+  </main>
+
+  <!-- 系统配置向导模态框 -->
+  <div id="configModal" class="modal-backdrop" hidden>
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h2>⚙️ 系统环境配置向导</h2>
+          <p class="modal-subtitle">填写后自动保存至根目录 <code>.env</code> 文件，下次启动直接生效</p>
+        </div>
+        <button id="closeConfigBtn" class="close-btn" type="button" title="关闭">✕</button>
+      </div>
+
+      <form id="configForm" class="modal-body">
+        <div class="form-section">
+          <h3>🧠 大语言模型 (LLM) 设置</h3>
+          <div class="form-grid">
+            <label class="full-width">API Key
+              <input id="cfgLlmApiKey" type="password" placeholder="sk-..." required autocomplete="off">
+            </label>
+            <label>接口地址 (Base URL)
+              <input id="cfgLlmBaseUrl" type="url" value="https://api.deepseek.com" placeholder="https://api.deepseek.com" required>
+            </label>
+            <label>模型名称 (Model)
+              <input id="cfgLlmModel" type="text" value="deepseek-v4-flash" placeholder="deepseek-v4-flash" required>
+            </label>
+            <label class="checkbox-label full-width">
+              <input id="cfgLlmThinking" type="checkbox">
+              <span>启用深度思考 / 推理模式 (Thinking)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <div class="form-section-title">
+            <h3>🏦 OKX 交易所凭证 (选填，自动交易必须)</h3>
+            <a href="https://www.topzhjdgxcb.com/join/6746503" target="_blank" rel="noopener noreferrer" class="reg-link">🔗 注册okx用户</a>
+          </div>
+          <div class="form-grid">
+            <label class="full-width">API Key
+              <input id="cfgOkxApiKey" type="text" placeholder="OKX API Key" autocomplete="off">
+            </label>
+            <label class="full-width">Secret Key
+              <input id="cfgOkxSecretKey" type="password" placeholder="OKX Secret Key" autocomplete="off">
+            </label>
+            <label>Passphrase 密码口令
+              <input id="cfgOkxPassphrase" type="password" placeholder="OKX Passphrase" autocomplete="off">
+            </label>
+            <label>交易环境
+              <select id="cfgOkxDemoTrading">
+                <option value="true" selected>模拟盘 (Demo Trading - 推荐新手)</option>
+                <option value="false">实盘 (Live Trading)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <h3>🛡️ 默认下单与风控（参照首页合约换算查询计算下单量）</h3>
+          <div class="form-grid three-col">
+            <label>默认下单量
+              <input id="cfgOkxOrderSize" type="number" step="any" min="0.0001" value="1.0">
+            </label>
+            <label>默认杠杆
+              <input id="cfgOkxLeverage" type="number" step="1" min="1" max="100" value="3">
+            </label>
+            <label>账户保证金模式
+              <select id="cfgOkxTradeMode">
+                <option value="cross" selected>全仓 (Cross)</option>
+                <option value="isolated">逐仓 (Isolated)</option>
+                <option value="cash">普通现货 (Cash)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <div id="configSaveMsg" class="save-msg"></div>
+          <button id="cancelConfigBtn" class="secondary" type="button">取消</button>
+          <button id="saveConfigBtn" class="primary" type="submit">💾 保存配置到 .env 并生效</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" role="status"></div>
+  <script src="/static/app.js?v=__ASSET_VERSION__"></script>
+</body>
+</html>

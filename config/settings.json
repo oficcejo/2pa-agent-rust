@@ -1,0 +1,46 @@
+{
+  "provider": {
+    "model": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com",
+    "api_key": "",
+    "thinking": false,
+    "reasoning_effort": "high",
+    "context_window": 128000
+  },
+  "general": {
+    "analysis_bar_count": 100,
+    "decision_confidence_threshold": 40,
+    "decision_stance": "balanced",
+    "enable_next_bar_prediction": false,
+    "structure_flip_cooldown_bars": 3
+  },
+  "prompt": {
+    "stage2_load_full_strategy_library": false,
+    "experience_max_entries": 0,
+    "experience_max_chars_per_entry": 400,
+    "stage1_inject_pattern_briefs": true
+  },
+  "validation": {
+    "normalization_mode": "lenient",
+    "stage1_coherence_checks": false,
+    "stage2_coherence_checks": false,
+    "trace_semantic_checks": false,
+    "strict_bar_by_bar_features": false,
+    "disable_truncation_repair": false,
+    "retry_enabled": true,
+    "retry_max": 3,
+    "retry_max_semantic": 1,
+    "retry_stage2": true
+  },
+  "okx": {
+    "base_url": "https://www.okx.com",
+    "demo_trading": true,
+    "auto_trading_enabled": false,
+    "live_trading_acknowledged": false,
+    "default_order_size": 1.0,
+    "trade_mode": "cross",
+    "position_mode": "net",
+    "max_signal_age_seconds": 120,
+    "automation_poll_seconds": 20
+  }
+}

@@ -1,0 +1,43 @@
+[package]
+name = "okx-2pa-agent"
+version = "0.2.0"
+edition = "2021"
+authors = ["okx-2pa-agent Contributors"]
+description = "OKX AI trading application with OpenAI-compatible LLM price action analysis in Rust"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+tokio = { version = "1.40", features = ["full"] }
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
+rust-embed = { version = "8.5" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "socks", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = { version = "0.9", features = ["serde"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+thiserror = "1.0"
+regex = "1.10"
+rust_decimal = { version = "1.36", features = ["serde", "serde-float", "maths"] }
+rust_decimal_macros = "1.36"
+futures-util = "0.3"
+urlencoding = "2.1"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+parking_lot = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,58 @@
+【文件定位】本文件职责：双顶/双底（DT/DB）、微型双顶底、颈线（Neckline）的识别与二次入场规则。`detected_patterns` 含 `double_top_bottom` 时加载。
+
+⚠️ **PA Agent**：双顶/双底意味反转*可能*发生 → **禁止追顺势**、**禁止逆势三价**；仅诊断 + `watch_points`。`order_type=不下单`。
+
+---
+
+## 1. 定义
+
+**双顶（Double Top）**：价格两次测试相近高点，第二次未能创新高，反转向下。
+**双底（Double Bottom）**：价格两次测试相近低点，第二次未能创新低，反转向上。
+
+**微型双顶/底**：在即时信号窗口（K10–K1）内的小型双顶底，常作刮头皮或 MTR 组成部分。
+
+`detected_patterns` 写 `double_top_bottom`；若同时满足 MTR 四组件，加 `mtr`。
+
+---
+
+## 2. 有效 vs 无效
+
+**有效**：
+- 两次极点价位接近（允许小幅刺破，收盘不确认新高/新低）。
+- 第二次测试后出现反向趋势棒或明确信号棒。
+- 中间有清晰回撤（颈线区域可识别）。
+
+**无效**：
+- 第二次大幅创新高/新低（只是延续趋势）。
+- 铁丝网/区间中部的小波动「假双顶」。
+- 仅单根长上影，无第二次结构化测试。
+
+---
+
+## 3. 识别与监测（二次测试优先）【Brooks 背景；本 Agent 禁止逆势三价】
+
+| 次序 | 行为 | PA Agent |
+|------|------|----------|
+| 第一次触顶/底 | 可能是正常回撤 | 不追、不下单 |
+| 第二次触顶/底失败 | 确认极点 | 仅诊断 `reversal_attempt` / `double_top_bottom` |
+| 突破颈线后回撤 | Brooks 二次入场背景 | `watch_points` 监测；**禁止**逆势三价 |
+
+**输出**：
+- `order_type=不下单`；`terminal=wait`
+- `watch_points`：第二次极点、颈线、失效（极点被收盘突破）
+- reasoning 可写 MM 背景目标（文件23），**不得**产出逆主趋势 order_direction
+
+---
+
+## 4. 与 MTR 的关系
+
+双顶底常是 MTR 的**极点测试失败**环节（文件25 组件 4）。仅有双顶形态而无趋势线突破 → `reversal_attempt`，非 `mtr`。
+
+---
+
+## 5. 阶段二 JSON
+
+- `bar_analysis.second_entry.is_second_entry=true` 当第二次测试触发。
+- `signal_bar.pattern` 可为 none 或 H2/L2（若嵌在计数框架内）。
+- reasoning 须标明两次极点对应 K 线序号。
+- `invalidation_condition`：第二次极点被收盘突破则失效。

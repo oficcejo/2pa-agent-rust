@@ -1,0 +1,2 @@
+[permissions]
+allow = ["Edit", "Bash=$inst = Invoke-RestMethod -Uri \"https://www.okx.com/api/v5/public/instruments?instType=SWAP&instId=XAU-USDT-SWAP\" -TimeoutSec 30; $inst.data | Select-Object instId, ctValCcy, ctVal, lotSz, minSz, tickSz, settleCcy, lever | Format-List; $t = Invoke-RestMethod -Uri \"https://www.okx.com/api/v5/market/ticker?instId=XAU-USDT-SWAP\" -TimeoutSec 30; $t.data | Select-Object instId, last, bidPx, askPx, open24h, high24h, low24h | Format-List"]
