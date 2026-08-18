@@ -2,9 +2,10 @@ use crate::data::bar_close::has_forming_bar_at_head;
 use crate::data::base::{IndicatorBundle, KlineBar, KlineFrame};
 use crate::indicators::atr::atr_full;
 use crate::indicators::ema::ema_full;
+use crate::indicators::sma::sma_full;
 use crate::util::timefmt::now_local_ms;
 
-pub const INDICATOR_WARMUP_BARS: usize = 50;
+pub const INDICATOR_WARMUP_BARS: usize = 180;
 
 pub fn compute_indicators(bars: &[KlineBar]) -> IndicatorBundle {
     let mut bars_asc: Vec<KlineBar> = bars.to_vec();
@@ -16,13 +17,31 @@ pub fn compute_indicators(bars: &[KlineBar]) -> IndicatorBundle {
 
     let mut ema20_asc = ema_full(&closes, 20);
     let mut atr14_asc = atr_full(&highs, &lows, &closes, 14);
+    let mut sma14_asc = sma_full(&closes, 14);
+    let mut sma170_asc = sma_full(&closes, 170);
+
+    let mut dev170_pct_asc = Vec::with_capacity(closes.len());
+    for i in 0..closes.len() {
+        let s170 = sma170_asc[i];
+        if !s170.is_nan() && s170.abs() > 1e-6 {
+            dev170_pct_asc.push((closes[i] - s170) / s170 * 100.0);
+        } else {
+            dev170_pct_asc.push(0.0);
+        }
+    }
 
     ema20_asc.reverse();
     atr14_asc.reverse();
+    sma14_asc.reverse();
+    sma170_asc.reverse();
+    dev170_pct_asc.reverse();
 
     IndicatorBundle {
         ema20: ema20_asc,
         atr14: atr14_asc,
+        sma14: sma14_asc,
+        sma170: sma170_asc,
+        dev170_pct: dev170_pct_asc,
     }
 }
 
@@ -61,6 +80,9 @@ pub fn build_analysis_frame(
     let indicators = IndicatorBundle {
         ema20: indicators_all.ema20[..n].to_vec(),
         atr14: indicators_all.atr14[..n].to_vec(),
+        sma14: indicators_all.sma14[..n].to_vec(),
+        sma170: indicators_all.sma170[..n].to_vec(),
+        dev170_pct: indicators_all.dev170_pct[..n].to_vec(),
     };
 
     Some(KlineFrame {

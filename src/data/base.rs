@@ -43,6 +43,12 @@ impl KlineBar {
 pub struct IndicatorBundle {
     pub ema20: Vec<f64>,
     pub atr14: Vec<f64>,
+    #[serde(default)]
+    pub sma14: Vec<f64>,
+    #[serde(default)]
+    pub sma170: Vec<f64>,
+    #[serde(default)]
+    pub dev170_pct: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

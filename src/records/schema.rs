@@ -12,9 +12,13 @@ pub struct RecordMeta {
     pub ai_provider: Value,
     #[serde(default = "default_stance")]
     pub decision_stance: String,
+    #[serde(default = "default_trading_system")]
+    pub trading_system: String,
 }
 
 fn default_stance() -> String { "balanced".to_string() }
+fn default_trading_system() -> String { "2pa".to_string() }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisRecord {

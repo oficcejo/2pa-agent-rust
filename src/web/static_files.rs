@@ -22,9 +22,13 @@ pub fn asset_version() -> String {
 }
 
 pub fn render_index() -> Html<String> {
-    let raw = match StaticAssets::get("index.html") {
-        Some(f) => String::from_utf8_lossy(&f.data).to_string(),
-        None => "<h1>okx-2pa-agent-web</h1>".to_string(),
+    let raw = if let Ok(s) = fs::read_to_string("static/index.html") {
+        s
+    } else {
+        match StaticAssets::get("index.html") {
+            Some(f) => String::from_utf8_lossy(&f.data).to_string(),
+            None => "<h1>okx-2pa-agent-web</h1>".to_string(),
+        }
     };
     let version = asset_version();
     Html(raw.replace("__ASSET_VERSION__", &version))

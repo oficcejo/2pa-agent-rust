@@ -46,6 +46,7 @@ pub struct AnalyzeRequest {
     pub bar_count: usize,
     #[serde(default)]
     pub execute: bool,
+    pub trading_system: Option<String>,
 }
 fn default_bar_count() -> usize { 100 }
 
@@ -63,6 +64,7 @@ pub struct AutomationRequest {
     pub session_start: Option<String>,
     pub session_end: Option<String>,
     pub session_weekdays: Option<Vec<u32>>,
+    pub trading_system: Option<String>,
 }
 
 pub async fn handle_index() -> Html<String> {
@@ -148,7 +150,7 @@ pub async fn handle_analyze(
     State(service): State<AppState>,
     Json(req): Json<AnalyzeRequest>,
 ) -> Response {
-    match service.analyze(&req.inst_id, &req.timeframe, req.bar_count, req.execute).await {
+    match service.analyze(&req.inst_id, &req.timeframe, req.bar_count, req.execute, req.trading_system.as_deref()).await {
         Ok(data) => Json(data).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
@@ -168,6 +170,7 @@ pub async fn handle_automation(
         req.session_start.as_deref(),
         req.session_end.as_deref(),
         req.session_weekdays.as_deref(),
+        req.trading_system.as_deref(),
     ) {
         Ok(data) => Json(data).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -204,3 +207,20 @@ pub async fn handle_contract_specs(
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub struct SetTradingSystemRequest {
+    pub trading_system: String,
+}
+
+pub async fn handle_set_trading_system(
+    State(service): State<AppState>,
+    Json(req): Json<SetTradingSystemRequest>,
+) -> Response {
+    let clean = req.trading_system.trim();
+    if !clean.is_empty() {
+        *service.current_trading_system.write() = clean.to_string();
+    }
+    Json(service.status()).into_response()
+}
+

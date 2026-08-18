@@ -300,6 +300,7 @@
 .star-action-btn.discord-btn{background:#181d22;color:#b0c2cc;border:1px solid #323d45}
 .star-action-btn.discord-btn:hover{background:#20272e;border-color:#5865F2;color:#fff}
 
-
-
-
+/* 交易系统选择器样式 */
+#tradingSystemSelect{font-weight:600;color:#f8fafc;border-color:#3d484e;background:#161b1e}
+#tradingSystemSelect:hover{border-color:#5a6870}
+#cfgTradingSystem{font-weight:600;color:#f8fafc;background:#161b1e}

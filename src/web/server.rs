@@ -26,6 +26,7 @@ pub fn create_router(service: Arc<WebTradingService>) -> Router {
         .route("/api/automation", post(handle_automation))
         .route("/api/config", get(handle_get_config))
         .route("/api/config/save_env", post(handle_save_config))
+        .route("/api/trading_system", post(handle_set_trading_system))
         .route("/api/contract/specs", get(handle_contract_specs))
         .layer(CorsLayer::permissive())
         .with_state(service)

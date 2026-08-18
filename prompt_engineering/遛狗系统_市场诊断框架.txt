@@ -1,0 +1,91 @@
+# 遛狗系统：市场诊断框架（阶段一统一规范）
+
+> **使用说明**：本文件是遛狗系统（Dog Walking System）阶段一（读懂市场）的统一诊断规范。
+> 阶段一的核心任务是：
+> 1. 量化小狗（价格）与主人（SMA 170）之间的偏离程度与绳索拉力；
+> 2. 分析 SMA 14 与 SMA 170 的几何与斜率关系；
+> 3. 扫描 K10–K1 即时窗口中的衰竭拐点与突破形态；
+> 4. 执行阶段一闸门（Gate）裁决，决定是否允许进入阶段二决策。
+>
+> ⚠️ 阶段一不给出具体的入场、止损、止盈价位方案。必须输出纯 JSON。
+
+---
+
+## 一、状态分类与偏离度量化标准
+
+### 1. 偏离度指标定义
+- **绝对偏离度**：$$\Delta P = \text{Close} - \text{SMA170}$$
+- **相对偏离百分比**：$$\text{Dev\%} = \frac{\text{Close} - \text{SMA170}}{\text{SMA170}} \times 100\%$$
+- **绳索拉力系数（ATR 倍数）**：$$\text{Leash Multiplier} = \frac{|\text{Close} - \text{SMA170}|}{\text{ATR14}}$$
+
+### 2. 市场状态分类（`cycle_position`）
+
+| 状态枚举（`cycle_position`） | 中文名称 | 判定标准 | 核心交易含义 |
+|---|---|---|---|
+| `overstretched_bullish` | 多头极度拉伸 (偏离主人上方) | 价格与 SMA14 远高于 SMA170，Leash Multiplier >= 2.5 或 Dev% 显著偏大 | 蓄势回归：寻找小狗力竭见顶信号，准备【做空回归 170】 |
+| `overstretched_bearish` | 空头极度拉伸 (偏离主人下方) | 价格与 SMA14 远低于 SMA170，Leash Multiplier >= 2.5 或 Dev% 显著偏大 | 蓄势回归：寻找小狗力竭见底信号，准备【做多反弹 170】 |
+| `owner_bounce_support` | 主人脚下支撑 (回踩 170 企稳) | SMA170 明显向上倾斜，价格从上方回落至 SMA170 附近（0.5 ATR 内），收出看涨反转 K 线 | 顺势推进：测试主人支撑有效，准备【顺大势做多】 |
+| `owner_bounce_resistance` | 主人脚下阻力 (反弹 170 受阻) | SMA170 明显向下倾斜，价格从下方反弹至 SMA170 附近（0.5 ATR 内），收出看跌反转 K 线 | 顺势推进：测试主人阻力有效，准备【顺大势做空】 |
+| `leash_reversion_in_progress` | 回归行进中 (小狗正奔向主人) | 偏离后已跌破/突破 SMA14，正在快速朝 SMA170 靠拢，已完成部分回归 | 若已在半程且空间不足，禁止追单；仅持有或观察 |
+| `hugging_owner` | 主人身边缠绕 (无偏离盘整) | 价格与 SMA14 在 SMA170 上下反复穿越震荡，Leash Multiplier < 1.2 | **无交易区 (No-trade zone)**：绳子无拉力，禁止做回归单，严格 wait |
+
+---
+
+## 二、逐棒衰竭与信号识别（`detected_patterns`）
+
+在 K10–K1 即时窗口中，重点识别以下 8 种高确定性价格行为：
+
+1. `break_below_sma14`：多头拉伸后，K 线实体或收盘价有效下穿跌破 SMA 14 橙色均线（小狗失去短期支撑，绳索开始拉回）。
+2. `break_above_sma14`：空头拉伸后，K 线实体或收盘价有效上穿突破 SMA 14 橙色均线（小狗走出短期压制，反弹回归开启）。
+3. `bearish_pinbar_at_high`：在上方高位偏离区收出长上影看跌锤子/Pinbar（上影线 >= 实体 2 倍）。
+4. `bullish_pinbar_at_low`：在下方低位偏离区收出长下影看涨锤子/Pinbar（下影线 >= 实体 2 倍）。
+5. `bearish_engulfing`：高位看跌吞没（最新阴线实体完全覆盖前一根阳线实体）。
+6. `bullish_engulfing`：低位看涨吞没（最新阳线实体完全覆盖前一根阴线实体）。
+7. `divergence_exhaustion`：价格创出更高的高点（或更低的低点），但与 170 偏离速度减缓或出现双重顶/底衰竭。
+8. `rejection_at_170`：在 SMA 170 处收出明确的长针刺探后迅速收回（主人身边拒绝信号）。
+
+---
+
+## 三、阶段一闸门检查（Gate Checks）
+
+在给出 `gate_result` 时必须依次检查下列闸门：
+1. **偏离空间闸门**：
+   - 若做偏离回归，入场点到 SMA 170 的距离是否具备足够的利润空间（至少 >= 1.5 ATR）？
+   - 若距离不足 1.2 ATR，闸门判定不通过 (`wait`)。
+2. **拐点确认闸门**：
+   - 是否已收出明确的反转 K 线（如 Pinbar、吞没、或者价格已突破 SMA 14）？
+   - 如果价格仍在加速单边推升/砸盘且无任何减速迹象，严禁提前猜顶猜底，闸门判定 `wait`。
+3. **缠绕过滤闸门**：
+   - 若市场属于 `hugging_owner`，闸门直接判定 `wait`。
+
+当所有检查通过且存在高确定性交易机会时，`gate_result: "proceed"`；否则为 `"wait"`。
+
+---
+
+## 四、阶段一 JSON 输出格式规范
+
+```json
+{
+  "trading_system": "dog_walking",
+  "cycle_position": "overstretched_bullish" | "overstretched_bearish" | "owner_bounce_support" | "owner_bounce_resistance" | "leash_reversion_in_progress" | "hugging_owner",
+  "sma170_slope": "rising" | "falling" | "flat",
+  "leash_multiplier": 3.2,
+  "dev_pct": 2.45,
+  "dominant_force": "bulls" | "bears" | "neutral",
+  "trend_state": "多头极度偏离，小狗已跑出主人身边很远，出现力竭滞涨信号",
+  "key_levels": [
+    { "name": "SMA 170 主人均线", "price": 1916.5, "type": "target_magnet" },
+    { "name": "SMA 14 狗绳线", "price": 1968.2, "type": "immediate_barrier" },
+    { "name": "偏离极值点", "price": 1985.0, "type": "resistance" }
+  ],
+  "detected_patterns": ["overstretched_bullish", "bearish_pinbar_at_high", "break_below_sma14"],
+  "gate_result": "proceed" | "wait",
+  "gate_trace": [
+    { "check": "偏离空间检查", "passed": true, "reason": "距离 170 均线约 68.5 点空间，大于 3 倍 ATR" },
+    { "check": "拐点衰竭确认", "passed": true, "reason": "最新 K1 实体跌破 SMA 14 并收出长上影 Pinbar" },
+    { "check": "缠绕过滤检查", "passed": true, "reason": "未贴合 170 缠绕，处于明显外延偏离区" }
+  ],
+  "diagnosis_summary": "当前 ETH 价格与 SMA 14 位于 170 均线上方 2.45% 处，拉力系数达到 3.2 倍 ATR。最新 K 线在顶部遇阻并跌破 14 均线，小狗奔跑动能耗尽，均线回归引力启动，允许进入阶段二制定回归空单决策。",
+  "reasoning": "详细的阶段一分析逻辑与指标几何观察说明..."
+}
+```

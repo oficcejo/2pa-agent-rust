@@ -5,25 +5,46 @@
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white)](https://discord.gg/jk4mnW53gK)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue.svg)]()
 
-**OKX 2PA Agent** 是一款基于 **Al Brooks 价格行为学（Price Action）理论** 与 **大语言模型（LLM）两阶段智能推理** 的高频/日内量化交易系统。
+**OKX 2PA Agent** 是一款基于 **Al Brooks 价格行为学（Price Action）** 与 **均线偏离回归动力学（🐕 遛狗系统）**、结合 **大语言模型（LLM）两阶段智能推理** 的高频/日内量化交易系统。
 
-本项目采用 **纯 Rust** 进行重构与极致性能优化，支持编译为**单文件独立可执行程序**（Windows `.exe` / Linux 二进制 右侧Releases可直接下载exe运行），内嵌 Web 控制台与全部交易策略 Prompt，实现零外部运行时依赖（无需 Python、Node.js 等环境）即开即用。
-discord交流群https://discord.gg/jk4mnW53gK
+本项目采用 **纯 Rust** 进行重构与极致性能优化，支持编译为**单文件独立可执行程序**（Windows `.exe` / Linux 二进制，右侧 Releases 可直接下载运行），内嵌 Web 控制台与全部交易策略 Prompt，实现零外部运行时依赖（无需 Python、Node.js 等环境）即开即用。
+
+🎮 **Discord 交流群**：[https://discord.gg/jk4mnW53gK](https://discord.gg/jk4mnW53gK)
+
 ---
 
 ## 🌟 核心特性与功能亮点
 
-### 1. 纯 Rust 原生极速架构与单文件分发
+### 1. 🤖 双 AI 交易系统自由切换 (Dual Trading Systems)
+系统原生集成两套经实战打磨的独立交易决策系统，支持在 Web 界面一键无缝切换：
+
+- 📊 **2PA 价格行为系统 (Al Brooks 经典价格行为学)**：
+  - **经典八态周期**：Spike、Tight Channel、Broad Channel、Trading Range 等状态精确诊断。
+  - **几何形态引擎**：原生识别 EMA20 支撑阻力、二次入场 (H2/L2)、楔形反转 (Wedge)、突破测试 (Breakout Test)、跳空缺口 (Gap Bar) 等。
+  - **二元决策树**：严格的 Gate 闸门检验与胜率/盈亏比交易者方程计算。
+- 🐕 **遛狗系统 (SMA 14/170 均线偏离与回归系统)**：
+  - **动力学物理隐喻**：将 **170 SMA（蓝色）** 视为缓步前行的「主人 / 长期价值重心中枢」，将 **14 SMA（橙色）** 视为敏捷波动的「狗绳 / 短期趋势均线」，将 **K 线** 视为欢脱奔跑的「小狗」。
+  - **偏离极限衰竭回归（Mean-Reversion）**：当小狗过度远离主人（偏离度 Dev% 达到极值）且动能耗尽拐头（破 14 均线 / 衰竭 Pinbar / 吞没）时，绳索拉力迫使其发生向主人均线的快速回弹，**止盈目标 TP2 强制锚定 SMA 170 均线**。
+  - **170 主人均线回踩顺势（Trend-Continuation）**：在平缓趋势中回踩 170 主人均线获得强支撑/阻力并收出反转信号时顺势入场。
+  - **动态图表与图例**：选择遛狗系统时，K 线图表自动绘制 **SMA 14（橙色狗绳）** 与 **SMA 170（蓝色主人中枢）**，并实时呈现双均线数值图例。
+
+---
+
+### 2. 纯 Rust 原生极速架构与单文件分发
 - **极致性能**：毫秒级响应、超低内存占用（< 20MB），基于 Tokio + Axum 高并发异步运行时。
 - **单文件独立发布（Zero Dependencies）**：通过 `rust-embed` 将 Web 控制台静态资源与 Prompt 工程规则库完全编译进二进制产物，单文件即可在任何 Windows/Linux 环境独立运行。
+- **本地系统时间日志**：控制台日志自动根据服务器/本机时区输出易读的本地时间。
 
+---
 
-### 2. 智能环境配置向导 (Web Setup Wizard)
+### 3. 智能环境配置向导 (Web Setup Wizard)
 - **首次运行自动检测与浏览器唤起**：双击启动 `okx-2pa-agent.exe` 时，若未检测到 `.env` 或 API 密钥未配置，控制台输出提示并**自动调用系统默认浏览器**打开配置向导。
 - **一键持久化至 `.env`**：在 Web 界面中填入大模型 API Key（默认模型 `deepseek-v4-flash`、默认接口 `https://api.deepseek.com`、默认关闭思考模式）和 OKX 凭证后，点击保存将**自动写入程序根目录 `.env`**，并在内存中即时热加载生效，下次直接启动无需重复配置。
 - **顶部配置按钮**：Web 顶部栏提供「⚙️ 系统配置」入口，随时可点击修改密钥并即时生效；内置「🔗 注册okx用户」快捷开户入口。
 
-### 3. 📐 合约规格与张数双向换算器 (Contract Calculator)
+---
+
+### 4. 📐 合约规格与张数双向换算器 (Contract Calculator)
 针对 OKX 永续合约按「张数」下单难以直观把握资金价值的问题，内置专属换算工作台：
 - **常见热门品种 1 张面值速查表**：
   - 覆盖加密主流（BTC 1张=0.01BTC、ETH 1张=0.1ETH、SOL 1张=1SOL、DOGE 1张=1000DOGE 等）、贵金属（XAU 黄金、XAG 白银）及美股 TradFi（AAPL、TSLA、NVDA、SPX）。
@@ -33,24 +54,23 @@ discord交流群https://discord.gg/jk4mnW53gK
   - **💰 模式一（按投入 USDT 算张数）**：输入目标 USDT 仓位价值 + 杠杆倍数 $\rightarrow$ 自动计算**建议下单张数**、实际交易金额、所需保证金及标的币数。
   - **📊 模式二（按张数算所需 USDT）**：输入计划下单张数 + 杠杆倍数 $\rightarrow$ 自动计算**仓位总价值 (USDT)**、占用保证金及标的代币总量。
 
-### 4. 🧠 Al Brooks 价格行为学两阶段 AI 推理
-- **原生几何特征引擎**：原生计算 EMA20、True Range 与 ATR14（Wilder 递归平滑），自动提取 K 线重叠度、内部线序列（ii / iii）、反转序列（ioi）、微双顶底、跳空缺口（Gap Bar）、5 根 K 线突破质量与跟进力度。
-- **阶段一（市场诊断）**：研判周期位置（Spike / Channel / Range）、多空主导力量及入场前置 Gate 校验。
-- **阶段二（交易决策）**：动态路由专业策略规则书与经验库，输出确定性订单方向、挂单类型及精确价格。
-- **JSON 自愈与逻辑重试**：内置 Markdown 剥离、格式修复与三价单调性校验，遇异常自动反馈重试自纠错。
+---
 
 ### 5. 🛡️ 结构化止盈止损策略与交易所原子挂单
 - **保护性止损（Stop Loss）**：
   - 做多：信号棒低点 − 1 Tick；做空：信号棒高点 + 1 Tick。
   - 动态风控：止损距离 $> 2 \times \text{ATR14}$ 或超过通道宽度的 50% 时判定风险过大直接放弃。
 - **分级止盈（Take Profit）**：
-  - **TP1（主目标 / 保守止盈）**：最近结构边界，严格遵循**交易者方程**与**盈亏比 $\text{RR} \ge 1.0$**。
-  - **TP2（延伸目标）**：等距测量移动（Measured Move，MM）与区间 1:1 翻测。
+  - **TP1（主目标 / 保守止盈）**：最近结构边界或 14 均线，严格遵循**交易者方程**与**盈亏比 $\text{RR} \ge 1.0$**。
+  - **TP2（延伸目标）**：遛狗系统强制锚定 SMA 170 主人均线；2PA 系统锚定等距测量移动（Measured Move）。
 - **OKX 原子性 `attachAlgoOrds` 挂单**：
   - 下单时同时附带 `slTriggerPx` 与 `tpTriggerPx`，主订单成交后交易所端自动激活双向条件平仓单，本地无需保持开机。
 
+---
+
 ### 6. 🤖 自动交易调度与多时段管理
 - **单排等宽导航栏**：【决策】 | 【账户】 | 【📐 合约换算】 | 【🤖 自动交易】，专属翠绿发光高亮。
+- **系统状态与本地记忆联动**：切换交易系统即时持久化到本地 `localStorage`，并在后台与监控面板联动展示。
 - **多时区时段过滤器**：支持全天候（always）、美股常规盘（us_regular）、美股开盘窗口（us_open）、伦敦时段（london）、亚洲时段（asia）与自定义时区时段。
 
 ---
@@ -63,24 +83,30 @@ discord交流群https://discord.gg/jk4mnW53gK
 ├── config/                 # 运行时配置目录
 │   └── settings.json       # 系统参数配置文件
 ├── experience/             # 历史价格行为经验库
-├── prompt_engineering/     # Al Brooks 价格行为学提示词规则库
+├── prompt_engineering/     # 提示词工程规则库
+│   ├── 00_人设与思维方式.txt
+│   ├── 01_市场诊断框架.txt
+│   ├── 02_交易决策策略.txt
+│   ├── 遛狗系统_人设与思维方式.txt  # 🐕 遛狗系统人设与动力学公理
+│   ├── 遛狗系统_市场诊断框架.txt    # 🐕 遛狗系统阶段一诊断框架
+│   └── 遛狗系统_交易决策策略.txt    # 🐕 遛狗系统阶段二决策策略
 ├── records/                # 运行时持久化记录与交易审计日志
 │   ├── pending/            # 待跟踪决策记录
 │   └── trade_audit.jsonl   # 交易执行审计流水
 ├── src/                    # Rust 核心源代码
-│   ├── ai/                 # OpenAI 兼容客户端、Prompt 组装器、JSON 校验与自愈
+│   ├── ai/                 # OpenAI 兼容客户端、双系统 Prompt 组装器、JSON 校验与自愈
 │   ├── config/             # 配置管理、环境变量加载与路径管理
 │   ├── data/               # K 线数据模型、几何特征引擎、指标快照
-│   ├── indicators/         # EMA20、ATR14 原生算法实现
+│   ├── indicators/         # EMA20、ATR14、SMA14/170 原生算法实现
 │   ├── okx/                # OKX v5 REST 客户端、HMAC 签名、安全交易执行器
 │   ├── orchestrator/       # 两阶段分析编排器与重试闭环
 │   ├── records/            # 决策记录与经验库读取
 │   ├── util/               # 密钥脱敏、时间戳工具
 │   ├── web/                # Axum Web 服务、API 控制器、交易时段、静态资源内嵌
 │   ├── lib.rs              # 库模块入口
-│   └── main.rs             # CLI 启动入口与浏览器自动唤起
-├── static/                 # 前端 Web 控制台页面（HTML / CSS / JS）
-├── tests/                  # 单元测试与集成测试
+│   └── main.rs             # CLI 启动入口、本地时间日志与浏览器自动唤起
+├── static/                 # 前端 Web 控制台页面（HTML / CSS / JS，支持双均线与双系统图表）
+├── tests/                  # 单元测试与集成测试（19 个测试全部 PASS）
 ├── .env.example            # 环境变量示例文件
 ├── .gitignore              # Git 忽略配置
 ├── Cargo.toml              # Rust 项目构建清单与依赖
@@ -113,6 +139,9 @@ LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-v4-flash
 LLM_THINKING=false
 
+# 默认交易系统选择 (2pa 或 dog_walking)
+TRADING_SYSTEM=2pa
+
 # OKX API 凭证 (选填：开启自动交易必须配置)
 OKX_API_KEY=your-okx-api-key
 OKX_SECRET_KEY=your-okx-secret-key
@@ -134,11 +163,12 @@ cargo build --release
 
 启动后访问 `http://127.0.0.1:8088/` 即可进入 Web 控制台：
 
-1. **行情与指标图表**：实时绘制 OKX K 线图，叠加 EMA20、ATR14 与最新市场报价。
-2. **决策面板 (Decision)**：一键运行 AI 两阶段诊断，展示订单方向（做多/做空）、入场价、止损价、止盈价、胜率估计与判断依据。
-3. **账户总览 (Account)**：实时读取 OKX 账户总资产、可用保证金、未实现盈亏、持仓列表与历史权益曲线。
-4. **📐 合约换算 (Contract Calculator)**：热门品种合约面值对照表、任意品种实时搜索、资金量/张数双向智能换算器。
-5. **🤖 自动交易 (Automation)**：开启后台新 K 线闭合自动扫描与交易调度，设置分析时段窗口与下单确认。
+1. **交易系统切换器**：顶部工具栏在 **`📊 2PA 价格行为`** 与 **`🐕 遛狗系统 (SMA 14/170)`** 间自由切换。
+2. **行情与指标图表**：实时绘制 OKX K 线图，遛狗模式叠加 SMA 14 / SMA 170 双均线与数值图例，2PA 模式叠加 EMA 20 与 ATR 14。
+3. **决策面板 (Decision)**：一键运行 AI 两阶段诊断，展示订单方向、入场价、止损价、TP1/TP2 止盈价（遛狗系统 TP2 锚定 170 均线）、胜率估计与逻辑推理。
+4. **账户总览 (Account)**：实时读取 OKX 账户总资产、可用保证金、未实现盈亏、持仓列表与历史权益曲线。
+5. **📐 合约换算 (Contract Calculator)**：热门品种合约面值对照表、任意品种实时搜索、资金量/张数双向智能换算器。
+6. **🤖 自动交易 (Automation)**：开启后台新 K 线闭合自动扫描与交易调度，设置分析时段窗口与下单确认。
 
 ---
 
@@ -149,7 +179,10 @@ cargo build --release
 cargo test -- --nocapture
 ```
 
-测试覆盖范围：
+测试覆盖范围（19 项测试全部通过）：
+- `test_sma_calculation`：SMA 原生算法全量与增量计算校验
+- `test_dog_walking_prompts`：🐕 遛狗系统两阶段 Prompt 组装与指标渲染测试
+- `test_trading_system_switch`：双交易系统动态热切换与状态一致性测试
 - `test_ema_calculation`：EMA 指标平滑与预热测试
 - `test_atr_calculation`：Wilder ATR 真实波幅算法校验
 - `test_geometry_features`：Al Brooks K 线几何特征提取测试
@@ -165,14 +198,15 @@ cargo test -- --nocapture
 | 请求方法 | 路由路径 | 说明 |
 | :--- | :--- | :--- |
 | `GET` | `/` | 渲染 Web 控制台主页 |
-| `GET` | `/api/status` | 获取系统运行状态、Broker Tag 及自动化时段配置 |
+| `GET` | `/api/status` | 获取系统运行状态、当前交易系统、Broker Tag 及自动化配置 |
+| `POST` | `/api/trading_system` | 实时切换当前活跃的交易系统 (`2pa` / `dog_walking`) |
 | `GET` | `/api/config` | 获取当前脱敏后的系统配置信息 |
 | `POST` | `/api/config/save_env` | 保存配置至根目录 `.env` 并即时热加载 |
 | `GET` | `/api/contract/specs` | 获取 OKX 永续合约面值规格与实时折合 USDT 汇算 |
 | `GET` | `/api/instruments?inst_type=SWAP` | 查询 OKX 可交易合约/现货交易对列表 |
-| `GET` | `/api/candles?inst_id=BTC-USDT&timeframe=15m&limit=120` | 查询已计算指标的 K 线数据 |
+| `GET` | `/api/candles?inst_id=BTC-USDT&timeframe=15m&limit=300` | 查询已计算指标的 K 线数据 (支持 300 根深度) |
 | `GET` | `/api/account` | 查询账户总览、资金余额、持仓及挂单 |
-| `POST` | `/api/analyze` | 触发单次 K 线两阶段 AI 诊断与决策 |
+| `POST` | `/api/analyze` | 触发单次 K 线两阶段 AI 诊断与决策 (支持传入 `trading_system`) |
 | `POST` | `/api/automation` | 开启/关闭后台新 K 线闭合自动交易调度 |
 | `GET` | `/api/history/decisions` | 查询历史 AI 诊断与决策记录列表 |
 | `DELETE`| `/api/history/decisions/:id` | 删除指定的历史决策记录 |
@@ -183,7 +217,7 @@ cargo test -- --nocapture
 
 ## 💬 社区与交流群
 
-欢迎加入 Discord 官方讨论组，与量化开发者及交易员共同交流 Al Brooks 价格行为学策略与系统使用心得：
+欢迎加入 Discord 官方讨论组，与量化开发者及交易员共同交流 Al Brooks 价格行为学策略、遛狗均线回归策略与系统使用心得：
 
 - 🎮 **Discord 交流群**：[https://discord.gg/jk4mnW53gK](https://discord.gg/jk4mnW53gK)
 

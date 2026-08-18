@@ -49,6 +49,8 @@ pub struct GeneralSettings {
     pub decision_confidence_threshold: u32,
     #[serde(default = "default_decision_stance")]
     pub decision_stance: String,
+    #[serde(default = "default_trading_system")]
+    pub trading_system: String,
     #[serde(default)]
     pub enable_next_bar_prediction: bool,
     #[serde(default = "default_cooldown_bars")]
@@ -58,6 +60,7 @@ pub struct GeneralSettings {
 fn default_analysis_bar_count() -> usize { 100 }
 fn default_confidence_threshold() -> u32 { 40 }
 fn default_decision_stance() -> String { "balanced".to_string() }
+fn default_trading_system() -> String { "2pa".to_string() }
 fn default_cooldown_bars() -> usize { 3 }
 
 impl Default for GeneralSettings {
@@ -66,6 +69,7 @@ impl Default for GeneralSettings {
             analysis_bar_count: default_analysis_bar_count(),
             decision_confidence_threshold: default_confidence_threshold(),
             decision_stance: default_decision_stance(),
+            trading_system: default_trading_system(),
             enable_next_bar_prediction: false,
             structure_flip_cooldown_bars: default_cooldown_bars(),
         }
@@ -275,6 +279,9 @@ impl Settings {
         }
         if let Ok(v) = std::env::var("LLM_STAGE_TIMEOUT_SECONDS").or_else(|_| std::env::var("AI_STAGE_TIMEOUT_SECONDS")) {
             if let Ok(num) = v.trim().parse::<u64>() { settings.provider.stage_timeout_seconds = num; }
+        }
+        if let Ok(v) = std::env::var("TRADING_SYSTEM").or_else(|_| std::env::var("AI_TRADING_SYSTEM")) {
+            if !v.trim().is_empty() { settings.general.trading_system = v.trim().to_string(); }
         }
 
         if let Ok(v) = std::env::var("OKX_API_KEY") {

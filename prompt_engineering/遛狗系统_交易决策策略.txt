@@ -1,0 +1,137 @@
+# 遛狗系统：交易决策与执行策略（阶段二统一规范）
+
+> **使用说明**：本文件是遛狗系统（Dog Walking System）阶段二（交易决策）的执行策略库。
+> 阶段二在阶段一【市场诊断】的基础上，结合 14/170 均线空间几何特征，给出最终的买卖决策与精确的三价计划（Entry、SL、TP1、TP2=SMA170）。
+> 必须输出纯 JSON 格式。
+
+---
+
+## 一、核心策略 Playbook
+
+### 策略 A：偏离极限回归策略（核心回归战法）
+
+**适用场景**：阶段一 `cycle_position` 为 `overstretched_bullish` 或 `overstretched_bearish`，且 `gate_result` 为 `proceed`。
+
+#### 1. 空头回归单（多头力竭做空，目标回归 SMA 170）
+- **触发条件**：
+  1. 价格位于 SMA 170 上方，且拉力系数 Leash Multiplier >= 2.5 或偏离度显著；
+  2. 出现顶部衰竭形态（Pinbar、吞没、黄昏星、或 K 线收盘跌破 SMA 14 狗绳）；
+- **三价设置规则**：
+  - **入场价（`entry_price`）**：
+    - 市价单/突破单：跌破最新信号棒最低价或当前收盘价；
+    - 限价单：向上反抽回踩 SMA 14 阻力位置；
+  - **止损价（`stop_loss_price`）**：
+    - 设于本次偏离行情的最高极值点上方 + 0.5 倍 ATR 缓冲空间（结构性防守线）；
+  - **止盈目标一（`take_profit_price`）**：
+    - 设于当前 **SMA 170 均线实时价格**（回归核心终极目标）；
+  - **保守目标二（`take_profit_price_2`）**：
+    - 设于 SMA 14 附近或回归半程（0.5 偏离空间）作为第一防守止盈位；
+- **胜率基准**：65%–75%（满足 RR >= 1.2 时执行）。
+
+#### 2. 多头回归单（空头力竭做多，目标反弹回归 SMA 170）
+- **触发条件**：
+  1. 价格位于 SMA 170 下方，且拉力系数 Leash Multiplier >= 2.5 或偏离度显著；
+  2. 出现底部衰竭形态（Pinbar、吞没、早晨星、或 K 线收盘突破站上 SMA 14 狗绳）；
+- **三价设置规则**：
+  - **入场价（`entry_price`）**：
+    - 市价单/突破单：突破最新信号棒最高价或当前收盘价；
+    - 限价单：向下回踩 SMA 14 支撑位置；
+  - **止损价（`stop_loss_price`）**：
+    - 设于本次偏离行情的最低极值点下方 - 0.5 倍 ATR 缓冲空间；
+  - **止盈目标一（`take_profit_price`）**：
+    - 设于当前 **SMA 170 均线实时价格**（回归核心终极目标）；
+  - **保守目标二（`take_profit_price_2`）**：
+    - 设于 SMA 14 附近或回归半程作为第一防守止盈位；
+- **胜率基准**：65%–75%（满足 RR >= 1.2 时执行）。
+
+---
+
+### 策略 B：主人均线支撑/阻力顺势策略（170 均线顺势战法）
+
+**适用场景**：阶段一 `cycle_position` 为 `owner_bounce_support` 或 `owner_bounce_resistance`。
+
+#### 1. 170 均线多头回踩顺势（大趋势向上）
+- **触发条件**：
+  1. SMA 170 明显向上倾斜（`sma170_slope: "rising"`）；
+  2. 价格回踩 SMA 170 获得支撑，K 线在 170 附近收出长下影线或看涨确认棒，SMA 14 重新向上抬头；
+- **三价设置**：
+  - **入场价**：突破 170 企稳棒高点或市价；
+  - **止损价**：SMA 170 均线下方 - 0.8 倍 ATR；
+  - **止盈目标**：前期波段高点或 1.5~2.0 倍风险盈亏比位置。
+
+#### 2. 170 均线空头反弹顺势（大趋势向下）
+- **触发条件**：
+  1. SMA 170 明显向下倾斜（`sma170_slope: "falling"`）；
+  2. 价格反弹至 SMA 170 遇阻，K 线在 170 附近收出长上影线或看跌确认棒，SMA 14 重新向下低头；
+- **三价设置**：
+  - **入场价**：跌破 170 受阻棒低点或市价；
+  - **止损价**：SMA 170 均线上方 + 0.8 倍 ATR；
+  - **止盈目标**：前期波段低点或 1.5~2.0 倍风险盈亏比位置。
+
+---
+
+### 策略 C：无偏离/缠绕观望策略（风控防御）
+
+**适用场景**：
+- 阶段一 `cycle_position: "hugging_owner"`；
+- 阶段一 `gate_result: "wait"`；
+- 或者回归空间与止损空间计算后盈亏比 RR < 1.2。
+
+**处理规则**：
+- `order_type: "不下单"`
+- `order_direction: null`
+- `entry_price: null`, `stop_loss_price: null`, `take_profit_price: null`
+- `terminal: { "outcome": "wait", "label": "无偏离空间或盈亏比不足，观望等待绳索拉开", "node_id": "WAIT_NO_EDGE" }`
+
+---
+
+## 二、交易者方程与决策裁决
+
+在确定方案前，必须通过二元数学检查：
+1. **风险点数（Risk）** = $|\text{entry\_price} - \text{stop\_loss\_price}|$
+2. **回报点数（Reward）** = $|\text{take\_profit\_price} - \text{entry\_price}|$
+3. **盈亏比（RR）** = $\text{Reward} / \text{Risk}$
+4. **方程通过标准**：
+   - 盈亏比必须满足 $RR \ge 1.2$；
+   - 估算胜率必须满足 $\text{WinRate} \ge 55\%$；
+   - 两者皆满足时：`traders_equation_passes: true`，给出可执行订单；
+   - 否则：`traders_equation_passes: false`，自动降级为 `order_type: "不下单"`。
+
+---
+
+## 三、阶段二 JSON 输出格式规范
+
+```json
+{
+  "trading_system": "dog_walking",
+  "decision": {
+    "order_type": "市价单" | "限价单" | "突破单" | "不下单",
+    "order_direction": "做多" | "做空" | null,
+    "entry_price": 1965.2,
+    "stop_loss_price": 1988.0,
+    "take_profit_price": 1916.5,
+    "take_profit_price_2": 1940.0,
+    "trade_confidence": 85,
+    "estimated_win_rate": 70,
+    "estimated_win_rate_reasoning": "极端上方偏离（3.2 ATR）叠加 K 线收出长上影 Pinbar 并跌破 14 均线，历史均线回归统计胜率约 70%",
+    "risk_reward_ratio": 2.14,
+    "traders_equation_passes": true,
+    "reasoning": "通俗决策理由：小狗已经在 170 均线上方极度狂奔，当前在 1985 附近疲惫见顶，并收阴跌破 14 橙色狗绳，说明绳索弹力已经生效。入场做空，止损放在前高 1988 上方，止盈直指 170 均线 1916.5 位置，回归空间巨大，盈亏比达到 2.14，符合遛狗系统高胜率规范。"
+  },
+  "decision_trace": [
+    { "node": "阶段一闸门检查", "result": "通过 (proceed)" },
+    { "node": "策略路由", "result": "匹配策略 A-1 偏离回归做空" },
+    { "node": "交易者方程核算", "result": "风险 22.8 点，回归 170 均线利润 48.7 点，盈亏比 2.14 > 1.2，通过" }
+  ],
+  "terminal": {
+    "outcome": "trade",
+    "label": "遛狗回归做空 (奔向 170 均线)",
+    "node_id": "DOG_LEASH_SHORT_TO_SMA170"
+  },
+  "watch_points": [
+    "观察价格跌至 14 均线下方后的跟随速度",
+    "警惕若强势突破 1988 前高则立即宣告回归假设失效"
+  ],
+  "invalidation_condition": "价格强势突破并收盘站上 1988 前高"
+}
+```

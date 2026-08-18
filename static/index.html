@@ -54,11 +54,17 @@
             <option>30m</option><option>1h</option><option>4h</option><option>1d</option>
           </select>
         </label>
+        <label>交易系统
+          <select id="tradingSystemSelect">
+            <option value="2pa" selected>📊 2PA 价格行为</option>
+            <option value="dog_walking">🐕 遛狗系统 (SMA 14/170)</option>
+          </select>
+        </label>
         <button id="refreshButton" class="icon-button" title="刷新行情" aria-label="刷新行情">↻</button>
         <span id="instTypeBadge" class="inst-type-badge swap">⚡ 永续合约 (按张数下单)</span>
         <div class="analysis-controls">
           <div class="analysis-copy">
-            <strong>两阶段价格行为分析</strong>
+            <strong id="analysisTitle">两阶段价格行为分析</strong>
             <span id="analysisState">等待分析</span>
           </div>
           <label class="execute-check"><input id="executeAfterAnalysis" type="checkbox"> 分析后按风控执行</label>
@@ -337,6 +343,7 @@
         </section>
         <div class="risk-summary">
           <div><small>监控品种</small><b id="autoSymbol">—</b></div>
+          <div><small>交易系统</small><b id="autoSystem">2PA 价格行为</b></div>
           <div><small>信心门槛</small><b id="riskConfidence">—</b></div>
           <div><small>固定数量</small><b id="orderSize">—</b></div>
           <div><small>账户模式</small><b id="tradeMode">—</b></div>
@@ -423,6 +430,18 @@
       </div>
 
       <form id="configForm" class="modal-body">
+        <div class="form-section">
+          <h3>🤖 交易系统设置</h3>
+          <div class="form-grid">
+            <label class="full-width">默认分析与交易系统
+              <select id="cfgTradingSystem">
+                <option value="2pa" selected>📊 2PA 价格行为系统 (Al Brooks 经典八态)</option>
+                <option value="dog_walking">🐕 遛狗系统 (SMA 14/170 均线偏离与回归)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
         <div class="form-section">
           <h3>🧠 大语言模型 (LLM) 设置</h3>
           <div class="form-grid">

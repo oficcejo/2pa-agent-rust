@@ -28,6 +28,9 @@ pub struct SaveEnvRequest {
     #[serde(default)]
     pub llm_thinking: bool,
 
+    #[serde(default = "default_trading_system")]
+    pub trading_system: String,
+
     #[serde(default)]
     pub okx_api_key: String,
     #[serde(default)]
@@ -51,6 +54,7 @@ pub struct SaveEnvRequest {
 
 fn default_llm_base_url() -> String { "https://api.deepseek.com".to_string() }
 fn default_llm_model() -> String { "deepseek-v4-flash".to_string() }
+fn default_trading_system() -> String { "2pa".to_string() }
 fn default_okx_base_url() -> String { "https://www.okx.com".to_string() }
 fn default_true() -> bool { true }
 fn default_order_size() -> f64 { 1.0 }
@@ -63,6 +67,7 @@ pub struct WebTradingService {
     pub okx_client: Arc<RwLock<OKXClient>>,
     pub executor: Arc<RwLock<OKXTradeExecutor>>,
     pub orchestrator: Arc<RwLock<TwoStageOrchestrator>>,
+    pub current_trading_system: Arc<RwLock<String>>,
     pub automation_enabled: Arc<RwLock<bool>>,
     pub automation_symbol: Arc<RwLock<String>>,
     pub automation_timeframe: Arc<RwLock<String>>,
@@ -118,11 +123,14 @@ impl WebTradingService {
             Some(&settings.okx.automation_session_weekdays),
         );
 
+        let initial_system = settings.general.trading_system.clone();
+
         Self {
             settings: Arc::new(RwLock::new(settings)),
             okx_client: Arc::new(RwLock::new(okx_client)),
             executor: Arc::new(RwLock::new(executor)),
             orchestrator: Arc::new(RwLock::new(orchestrator)),
+            current_trading_system: Arc::new(RwLock::new(initial_system)),
             automation_enabled: Arc::new(RwLock::new(false)),
             automation_symbol: Arc::new(RwLock::new("BTC-USDT".to_string())),
             automation_timeframe: Arc::new(RwLock::new("15m".to_string())),
@@ -140,6 +148,7 @@ impl WebTradingService {
         let symbol = self.automation_symbol.read().clone();
         let timeframe = self.automation_timeframe.read().clone();
         let latest = self.latest_analysis.read().clone();
+        let trading_system = self.current_trading_system.read().clone();
 
         serde_json::json!({
             "ok": true,
@@ -153,6 +162,19 @@ impl WebTradingService {
             "broker_tag": BROKER_TAG,
             "symbol": symbol,
             "timeframe": timeframe,
+            "trading_system": trading_system,
+            "available_trading_systems": [
+                {
+                    "id": "2pa",
+                    "name": "2PA 价格行为系统 (Al Brooks)",
+                    "description": "基于经典价格行为学八态周期、EMA20 与二元决策树"
+                },
+                {
+                    "id": "dog_walking",
+                    "name": "🐕 遛狗系统 (SMA 14/170 均线回归)",
+                    "description": "基于 14 狗绳与 170 主人均线偏离力学与均值回归"
+                }
+            ],
             "confidence_threshold": settings.general.decision_confidence_threshold,
             "default_order_size": settings.okx.default_order_size,
             "default_leverage": settings.okx.default_leverage,
@@ -168,6 +190,7 @@ impl WebTradingService {
 
     pub fn get_config(&self) -> Value {
         let settings = self.settings.read();
+        let cur_sys = self.current_trading_system.read().clone();
         serde_json::json!({
             "has_env_file": std::path::Path::new(".env").exists(),
             "is_configured": settings.is_provider_configured() && settings.is_okx_configured(),
@@ -177,6 +200,7 @@ impl WebTradingService {
             "llm_base_url": settings.provider.base_url,
             "llm_model": settings.provider.model,
             "llm_thinking": settings.provider.thinking,
+            "trading_system": cur_sys,
             "okx_api_key": mask_secret(&settings.okx.api_key),
             "okx_secret_key": mask_secret(&settings.okx.secret_key),
             "okx_passphrase": mask_secret(&settings.okx.passphrase),
@@ -203,6 +227,9 @@ LLM_THINKING={}
 LLM_REASONING_EFFORT=high
 LLM_CONTEXT_WINDOW=128000
 LLM_STAGE_TIMEOUT_SECONDS=240
+
+# ------------------------------ 交易系统选择 ------------------------------
+TRADING_SYSTEM={}
 
 # ------------------------------ OKX API 凭证 ------------------------------
 OKX_API_KEY={}
@@ -233,6 +260,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             req.llm_base_url.trim(),
             req.llm_model.trim(),
             req.llm_thinking,
+            req.trading_system.trim(),
             req.okx_api_key.trim(),
             req.okx_secret_key.trim(),
             req.okx_passphrase.trim(),
@@ -288,6 +316,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             records_dir(),
         );
 
+        *self.current_trading_system.write() = new_settings.general.trading_system.clone();
         *self.settings.write() = new_settings;
         *self.okx_client.write() = new_client;
         *self.executor.write() = new_executor;
@@ -307,6 +336,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         session_start: Option<&str>,
         session_end: Option<&str>,
         session_weekdays: Option<&[u32]>,
+        trading_system: Option<&str>,
     ) -> Result<Value> {
         let settings = self.settings.read();
         if enabled && !*self.automation_enabled.read() {
@@ -327,6 +357,12 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             session_end.unwrap_or(&format!("{:02}:{:02}", cur_session.end.hour(), cur_session.end.minute())),
             session_weekdays.or(Some(&cur_session.weekdays)),
         );
+
+        if let Some(sys) = trading_system {
+            if !sys.trim().is_empty() {
+                *self.current_trading_system.write() = sys.trim().to_string();
+            }
+        }
 
         *self.automation_enabled.write() = enabled;
         *self.automation_symbol.write() = symbol.trim().to_uppercase();
@@ -455,6 +491,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
                     "id": stem,
                     "symbol": r.meta.symbol,
                     "timeframe": r.meta.timeframe,
+                    "trading_system": r.meta.trading_system,
                     "timestamp_ms": r.meta.timestamp_local_ms,
                     "timestamp_iso": r.meta.timestamp_local_iso,
                     "direction": direction,
@@ -496,14 +533,25 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         timeframe: &str,
         bar_count: usize,
         execute: bool,
+        system_override: Option<&str>,
     ) -> Result<Value> {
-        let raw_bars = self.fetch_raw_candles(inst_id, timeframe, bar_count + INDICATOR_WARMUP_BARS + 5).await?;
+        let system = match system_override {
+            Some(s) if !s.trim().is_empty() => {
+                let s_clean = s.trim().to_string();
+                *self.current_trading_system.write() = s_clean.clone();
+                s_clean
+            }
+            _ => self.current_trading_system.read().clone(),
+        };
+
+        let fetch_limit = (bar_count + INDICATOR_WARMUP_BARS + 20).min(300).max(100);
+        let raw_bars = self.fetch_raw_candles(inst_id, timeframe, fetch_limit).await?;
         let frame = build_analysis_frame(&raw_bars, bar_count, inst_id, timeframe, None)
             .ok_or_else(|| anyhow!("not enough closed OKX candles to build {}-bar analysis", bar_count))?;
 
         let record = {
             let orch = self.orchestrator.read().clone();
-            orch.run_analysis(&frame).await?
+            orch.run_analysis_with_system(&frame, &system).await?
         };
 
         let mut execution_res = Value::Null;
@@ -520,9 +568,17 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             }
         }
 
+        let system_name = if system == "dog_walking" {
+            "🐕 遛狗系统 (SMA 14/170 均线回归)"
+        } else {
+            "2PA 价格行为系统 (Al Brooks)"
+        };
+
         let output = serde_json::json!({
             "symbol": inst_id,
             "timeframe": timeframe,
+            "trading_system": system,
+            "system_name": system_name,
             "signal_bar_ts": frame.bars.first().map(|b| b.ts_open).unwrap_or(0),
             "stage1": record.stage1_diagnosis,
             "stage2": record.stage2_decision,
@@ -564,7 +620,8 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             info!("New closed bar detected on {} ({}), triggering analysis...", symbol, timeframe);
 
             let bar_count = self.settings.read().general.analysis_bar_count;
-            if let Err(e) = self.analyze(&symbol, &timeframe, bar_count, true).await {
+            let system = self.current_trading_system.read().clone();
+            if let Err(e) = self.analyze(&symbol, &timeframe, bar_count, true, Some(&system)).await {
                 error!("Automation analysis error: {}", e);
             }
         }

@@ -1,5 +1,5 @@
 use crate::ai::client::AIClient;
-use crate::ai::prompt_assembler::{build_stage1_prompt, build_stage2_prompt};
+use crate::ai::prompt_assembler::{build_stage1_prompt_for_system, build_stage2_prompt_for_system};
 use crate::config::settings::Settings;
 use crate::data::base::KlineFrame;
 use crate::orchestrator::validation_retry::{call_and_validate_stage1, call_and_validate_stage2};
@@ -42,18 +42,24 @@ impl TwoStageOrchestrator {
     }
 
     pub async fn run_analysis(&self, frame: &KlineFrame) -> Result<AnalysisRecord> {
-        info!("Starting Stage 1 analysis for {} ({})...", frame.symbol, frame.timeframe);
+        let system = self.settings.general.trading_system.clone();
+        self.run_analysis_with_system(frame, &system).await
+    }
 
-        let stage1_prompt = build_stage1_prompt(frame, self.prompt_dir.as_deref());
+    pub async fn run_analysis_with_system(&self, frame: &KlineFrame, system: &str) -> Result<AnalysisRecord> {
+        info!("Starting Stage 1 analysis for {} ({}) using system [{}]...", frame.symbol, frame.timeframe, system);
+
+        let stage1_prompt = build_stage1_prompt_for_system(system, frame, self.prompt_dir.as_deref());
         let (stage1_diagnosis, stage1_reply, stage1_messages) = call_and_validate_stage1(
             &self.ai_client,
             &stage1_prompt,
             self.settings.validation.retry_max,
         ).await?;
 
-        info!("Stage 1 diagnosis complete. Starting Stage 2 decision...");
+        info!("Stage 1 diagnosis complete. Starting Stage 2 decision for system [{}]...", system);
 
-        let (stage2_prompt, strategies_used, experiences_loaded) = build_stage2_prompt(
+        let (stage2_prompt, strategies_used, experiences_loaded) = build_stage2_prompt_for_system(
+            system,
             frame,
             &stage1_diagnosis,
             &self.settings.general.decision_stance,
@@ -112,6 +118,7 @@ impl TwoStageOrchestrator {
                     "api_key": mask_secret(&self.settings.provider.api_key),
                 }),
                 decision_stance: self.settings.general.decision_stance.clone(),
+                trading_system: system.to_string(),
             },
             kline_data,
             htf_text: String::new(),
@@ -145,3 +152,4 @@ impl TwoStageOrchestrator {
         Ok(record)
     }
 }
+

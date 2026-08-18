@@ -10,6 +10,45 @@ let decisionRecords = [];
 let tradeRecords = [];
 let sessionPresetOptions = [];
 let sessionDirty = false;
+let currentTradingSystem = "2pa";
+try {
+  const savedSys = localStorage.getItem("okx_trading_system");
+  if (savedSys === "dog_walking" || savedSys === "2pa") {
+    currentTradingSystem = savedSys;
+  }
+} catch {}
+
+function computeSMA(bars, period) {
+  const result = new Array(bars.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < bars.length; i++) {
+    sum += bars[i].close;
+    if (i >= period) {
+      sum -= bars[i - period].close;
+    }
+    if (i >= period - 1) {
+      result[i] = sum / period;
+    } else if (bars.length < period && i >= 3) {
+      result[i] = sum / (i + 1);
+    }
+  }
+  return result;
+}
+
+function computeEMA(bars, period) {
+  const result = new Array(bars.length).fill(null);
+  if (bars.length < period) return result;
+  const k = 2 / (period + 1);
+  let seed = 0;
+  for (let i = 0; i < period; i++) seed += bars[i].close;
+  let prev = seed / period;
+  result[period - 1] = prev;
+  for (let i = period; i < bars.length; i++) {
+    prev = bars[i].close * k + prev * (1 - k);
+    result[i] = prev;
+  }
+  return result;
+}
 
 const instrumentGroups = [
   {
@@ -154,6 +193,7 @@ function automationRequestBody(enabled) {
     session_start: $("sessionStart").value,
     session_end: $("sessionEnd").value,
     session_weekdays: selectedSessionWeekdays(),
+    trading_system: currentTradingSystem || $("tradingSystemSelect")?.value || "2pa",
   };
 }
 
@@ -169,6 +209,13 @@ function renderAutomationStatus(state, forceSessionControls = false) {
     else if (!state.automation_session?.active) messageElement.textContent = "自动交易已启用，当前不在分析时段，已暂停分析与交易";
     else if (state.can_execute) messageElement.textContent = "自动分析与执行已生效";
     else messageElement.textContent = "已启用，但执行条件未全部满足";
+  }
+  const autoSystem = $("autoSystem");
+  if (autoSystem) {
+    const sys = state.trading_system || currentTradingSystem;
+    autoSystem.innerHTML = sys === "dog_walking"
+      ? `<span style="color:var(--amber);font-weight:700">🐕 遛狗系统 (SMA 14/170)</span>`
+      : `<span style="color:var(--green);font-weight:700">2PA 价格行为</span>`;
   }
   renderAutomationSession(state, forceSessionControls);
 }
@@ -206,6 +253,13 @@ async function loadStatus() {
   if (confirmation) {
     const code = statusData.mode === "demo" ? "ENABLE DEMO" : "ENABLE LIVE";
     confirmation.placeholder = `请在此输入 ${code} 确认开启`;
+  }
+  if (statusData.trading_system) {
+    currentTradingSystem = statusData.trading_system;
+    try {
+      localStorage.setItem("okx_trading_system", currentTradingSystem);
+    } catch {}
+    updateSystemUI();
   }
   updateInstTypeBadge();
   if (statusData.latest) renderDecision(statusData.latest);
@@ -356,7 +410,7 @@ async function loadCandles() {
   const timeframe = $("timeframe").value;
   $("chartEmpty").style.display = "grid";
   try {
-    candles = await api(`/api/candles?inst_id=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=160`);
+    candles = await api(`/api/candles?inst_id=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=300`);
     if ($("symbol").value.trim().toUpperCase() !== symbol || $("timeframe").value !== timeframe) return;
     candles.sort((a, b) => a.ts_open - b.ts_open);
     const last = candles.at(-1);
@@ -375,6 +429,23 @@ async function loadCandles() {
   }
 }
 
+function updateSystemUI() {
+  const title = $("analysisTitle");
+  if (title) {
+    title.textContent = currentTradingSystem === "dog_walking" ? "两阶段遛狗均线回归分析" : "两阶段价格行为分析";
+  }
+  const autoSys = $("autoSystem");
+  if (autoSys) {
+    autoSys.innerHTML = currentTradingSystem === "dog_walking"
+      ? `<span style="color:var(--amber);font-weight:700">🐕 遛狗系统 (SMA 14/170)</span>`
+      : `<span style="color:var(--green);font-weight:700">2PA 价格行为</span>`;
+  }
+  const select = $("tradingSystemSelect");
+  if (select && select.value !== currentTradingSystem) {
+    select.value = currentTradingSystem;
+  }
+}
+
 function drawChart() {
   const canvas = $("chartCanvas");
   const wrap = $("chart");
@@ -389,16 +460,38 @@ function drawChart() {
   if (!candles.length) return;
 
   $("chartEmpty").style.display = "none";
-  const padding = { left: 12, right: 68, top: 16, bottom: 26 };
-  const data = candles.slice(-120);
-  const high = Math.max(...data.map((item) => item.high));
-  const low = Math.min(...data.map((item) => item.low));
-  const range = high - low || 1;
+  const padding = { left: 12, right: 68, top: 32, bottom: 26 };
+
+  // Calculate indicator arrays on the full sorted candle series
+  const sma14All = computeSMA(candles, 14);
+  const sma170All = computeSMA(candles, 170);
+  const ema20All = computeEMA(candles, 20);
+
+  const displayCount = 120;
+  const startIndex = Math.max(0, candles.length - displayCount);
+  const data = candles.slice(startIndex);
+  const sma14 = sma14All.slice(startIndex);
+  const sma170 = sma170All.slice(startIndex);
+  const ema20 = ema20All.slice(startIndex);
+
+  let high = Math.max(...data.map((item) => item.high));
+  let low = Math.min(...data.map((item) => item.low));
+
+  // Include visible indicator lines in min/max bounds so lines are never clipped
+  if (currentTradingSystem === "dog_walking") {
+    sma14.forEach((val) => { if (val != null) { high = Math.max(high, val); low = Math.min(low, val); } });
+    sma170.forEach((val) => { if (val != null) { high = Math.max(high, val); low = Math.min(low, val); } });
+  } else {
+    ema20.forEach((val) => { if (val != null) { high = Math.max(high, val); low = Math.min(low, val); } });
+  }
+
+  const range = (high - low) || 1;
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const y = (value) => padding.top + ((high - value) / range) * plotHeight;
   const x = (index) => padding.left + (index + 0.5) * plotWidth / data.length;
 
+  // Grid lines and price axis
   context.strokeStyle = "#202628";
   context.fillStyle = "#7c878a";
   context.font = "11px Segoe UI";
@@ -412,6 +505,7 @@ function drawChart() {
     context.fillText(fmt(value), width - padding.right + 7, yy + 4);
   }
 
+  // Draw Candlesticks
   const candleWidth = Math.max(2, plotWidth / data.length * 0.62);
   data.forEach((bar, index) => {
     const color = bar.close >= bar.open ? "#1fc48d" : "#f05b67";
@@ -426,21 +520,104 @@ function drawChart() {
     const bodyHeight = Math.max(1, Math.abs(y(bar.open) - y(bar.close)));
     context.fillRect(xx - candleWidth / 2, top, candleWidth, bodyHeight);
   });
+
+  // Draw Indicator Curves & Top Legend
+  if (currentTradingSystem === "dog_walking") {
+    // 1. Draw SMA 170 (Blue Line - Owner)
+    context.save();
+    context.strokeStyle = "#38bdf8";
+    context.lineWidth = 2.2;
+    context.beginPath();
+    let started170 = false;
+    for (let i = 0; i < data.length; i++) {
+      if (sma170[i] != null) {
+        const xx = x(i);
+        const yy = y(sma170[i]);
+        if (!started170) { context.moveTo(xx, yy); started170 = true; }
+        else { context.lineTo(xx, yy); }
+      }
+    }
+    if (started170) context.stroke();
+    context.restore();
+
+    // 2. Draw SMA 14 (Orange Line - Dog Leash)
+    context.save();
+    context.strokeStyle = "#fb923c";
+    context.lineWidth = 1.8;
+    context.beginPath();
+    let started14 = false;
+    for (let i = 0; i < data.length; i++) {
+      if (sma14[i] != null) {
+        const xx = x(i);
+        const yy = y(sma14[i]);
+        if (!started14) { context.moveTo(xx, yy); started14 = true; }
+        else { context.lineTo(xx, yy); }
+      }
+    }
+    if (started14) context.stroke();
+    context.restore();
+
+    // 3. Draw Legend at Top-Left (Matching Reference Image)
+    const last14 = sma14.filter((v) => v != null).at(-1);
+    const last170 = sma170.filter((v) => v != null).at(-1);
+    context.font = "bold 12px Segoe UI, sans-serif";
+    context.fillStyle = "#cbd5e1";
+    context.fillText("双移动平均线 14 170 Simple", padding.left + 4, 18);
+    let offset = padding.left + 175;
+    if (last14 != null) {
+      context.fillStyle = "#fb923c";
+      context.fillText(fmt(last14), offset, 18);
+      offset += 75;
+    }
+    if (last170 != null) {
+      context.fillStyle = "#38bdf8";
+      context.fillText(fmt(last170), offset, 18);
+    }
+  } else {
+    // 2PA Mode: Draw EMA 20 (Cyan Line)
+    context.save();
+    context.strokeStyle = "#22d3ee";
+    context.lineWidth = 1.8;
+    context.beginPath();
+    let startedEma = false;
+    for (let i = 0; i < data.length; i++) {
+      if (ema20[i] != null) {
+        const xx = x(i);
+        const yy = y(ema20[i]);
+        if (!startedEma) { context.moveTo(xx, yy); startedEma = true; }
+        else { context.lineTo(xx, yy); }
+      }
+    }
+    if (startedEma) context.stroke();
+    context.restore();
+
+    const lastEma = ema20.filter((v) => v != null).at(-1);
+    context.font = "bold 12px Segoe UI, sans-serif";
+    context.fillStyle = "#cbd5e1";
+    context.fillText("指数移动平均线 EMA 20", padding.left + 4, 18);
+    if (lastEma != null) {
+      context.fillStyle = "#22d3ee";
+      context.fillText(fmt(lastEma), padding.left + 155, 18);
+    }
+  }
 }
 
 function renderDecision(result) {
   const decision = result.decision || {};
   const direction = decision.order_direction || "不下单";
+  const sys = result.trading_system || result.meta?.trading_system || currentTradingSystem;
   $("decisionDirection").textContent = direction;
   $("decisionDirection").className = `direction ${direction === "做多" ? "long" : direction === "做空" ? "short" : "neutral"}`;
   $("confidence").textContent = `信心 ${decision.trade_confidence ?? "—"}%`;
   $("orderType").textContent = decision.order_type || "—";
   $("entryPrice").textContent = fmt(decision.entry_price);
   $("stopPrice").textContent = fmt(decision.stop_loss_price);
-  $("targetPrice").textContent = fmt(decision.take_profit_price);
+  $("targetPrice").textContent = decision.take_profit_price != null ? `${fmt(decision.take_profit_price)}${sys === "dog_walking" ? " (170均线)" : ""}` : "—";
   $("target2Price").textContent = fmt(decision.take_profit_price_2);
   $("winRate").textContent = decision.estimated_win_rate == null ? "—" : `${decision.estimated_win_rate}%`;
-  $("reasoning").textContent = decision.reasoning || result.exception?.message || "无交易决策";
+
+  const reasoningPrefix = sys === "dog_walking" ? "【🐕 遛狗系统决策】" : "【📊 2PA 价格行为决策】";
+  $("reasoning").textContent = decision.reasoning ? `${reasoningPrefix}\n${decision.reasoning}` : (result.exception?.message || "无交易决策");
   $("executionResult").textContent = result.execution ? JSON.stringify(result.execution, null, 2) : "未提交订单";
 }
 
@@ -639,7 +816,8 @@ async function deleteHistoryRecord(kind, recordId) {
 async function analyze() {
   const button = $("analyzeButton");
   button.disabled = true;
-  $("analysisState").textContent = "正在获取行情并运行两阶段 AI…";
+  const sysName = currentTradingSystem === "dog_walking" ? "🐕 遛狗系统" : "📊 2PA 价格行为";
+  $("analysisState").textContent = `正在获取行情并运行【${sysName}】两阶段 AI…`;
   try {
     const result = await api("/api/analyze", {
       method: "POST",
@@ -648,13 +826,14 @@ async function analyze() {
         timeframe: $("timeframe").value,
         bar_count: 100,
         execute: $("executeAfterAnalysis").checked,
+        trading_system: currentTradingSystem,
       }),
     });
     renderDecision(result);
     loadDecisionHistory(true);
     if ($("executeAfterAnalysis").checked) loadTradeHistory(true);
-    $("analysisState").textContent = result.exception ? `失败：${result.exception.message}` : "分析完成";
-    toast(result.execution?.submitted ? "订单已提交" : "分析完成");
+    $("analysisState").textContent = result.exception ? `失败：${result.exception.message}` : `【${sysName}】分析完成`;
+    toast(result.execution?.submitted ? "订单已提交" : `【${sysName}】分析完成`);
   } catch (error) {
     $("analysisState").textContent = `失败：${error.message}`;
     toast(error.message);
@@ -971,6 +1150,26 @@ $("tradeHistory").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-action='delete-trade']");
   if (button) deleteHistoryRecord("trades", button.dataset.id);
 });
+$("tradingSystemSelect").addEventListener("change", async (e) => {
+  currentTradingSystem = e.target.value;
+  try {
+    localStorage.setItem("okx_trading_system", currentTradingSystem);
+  } catch {}
+  updateSystemUI();
+  drawChart();
+  const name = currentTradingSystem === "dog_walking" ? "🐕 遛狗系统 (SMA 14/170)" : "📊 2PA 价格行为系统";
+  toast(`已切换交易系统为: ${name}`);
+  try {
+    const updatedStatus = await api("/api/trading_system", {
+      method: "POST",
+      body: JSON.stringify({ trading_system: currentTradingSystem }),
+    });
+    statusData = updatedStatus;
+    renderAutomationStatus(updatedStatus);
+  } catch (err) {
+    console.warn("同步交易系统到后端失败:", err);
+  }
+});
 $("automationSwitch").addEventListener("change", toggleAutomation);
 window.addEventListener("resize", () => {
   drawChart();
@@ -987,6 +1186,7 @@ async function openConfigModal() {
     $("cfgLlmBaseUrl").value = cfg.llm_base_url || "https://api.deepseek.com";
     $("cfgLlmModel").value = cfg.llm_model || "deepseek-v4-flash";
     $("cfgLlmThinking").checked = Boolean(cfg.llm_thinking);
+    if ($("cfgTradingSystem")) $("cfgTradingSystem").value = cfg.trading_system || currentTradingSystem || "2pa";
     if (cfg.okx_base_url) $("cfgOkxBaseUrl").value = cfg.okx_base_url;
     $("cfgOkxDemoTrading").value = String(cfg.okx_demo_trading !== false);
     if (cfg.okx_default_order_size) $("cfgOkxOrderSize").value = cfg.okx_default_order_size;
@@ -1012,6 +1212,7 @@ async function handleSaveConfig(event) {
       llm_base_url: $("cfgLlmBaseUrl").value.trim(),
       llm_model: $("cfgLlmModel").value.trim(),
       llm_thinking: $("cfgLlmThinking").checked,
+      trading_system: $("cfgTradingSystem") ? $("cfgTradingSystem").value : currentTradingSystem,
       okx_api_key: $("cfgOkxApiKey").value.trim(),
       okx_secret_key: $("cfgOkxSecretKey").value.trim(),
       okx_passphrase: $("cfgOkxPassphrase").value.trim(),
@@ -1228,7 +1429,22 @@ $("popularSpecsList").addEventListener("click", (e) => {
 });
 
 Promise.all([loadStatus(), loadInstruments(), loadCandles(), loadDecisionHistory(), loadTradeHistory()])
-  .then(() => {
+  .then(async () => {
+    try {
+      const savedSys = localStorage.getItem("okx_trading_system");
+      if (savedSys && savedSys !== statusData?.trading_system) {
+        const res = await api("/api/trading_system", {
+          method: "POST",
+          body: JSON.stringify({ trading_system: savedSys }),
+        });
+        statusData = res;
+        currentTradingSystem = res.trading_system || savedSys;
+        updateSystemUI();
+        renderAutomationStatus(res);
+        drawChart();
+      }
+    } catch {}
+
     // 若尚未配置 AI 或未检测到 .env，自动弹出向导
     if (statusData && (!statusData.is_ai_configured || !statusData.has_env_file)) {
       openConfigModal();
