@@ -1,6 +1,6 @@
 [package]
 name = "okx-2pa-agent"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["okx-2pa-agent Contributors"]
 description = "OKX AI trading application with OpenAI-compatible LLM price action analysis in Rust"
