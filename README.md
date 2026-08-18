@@ -1,13 +1,15 @@
 # OKX 2PA Agent (Rust 高性能版)
 
 [![Rust](https://img.shields.io/badge/language-Rust%201.75+-orange.svg)](https://www.rust-lang.org/)
+[![Release](https://img.shields.io/badge/Release-v0.3.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.3.0)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white)](https://discord.gg/jk4mnW53gK)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue.svg)]()
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-blue.svg)]()
 
 **OKX 2PA Agent** 是一款基于 **Al Brooks 价格行为学（Price Action）** 与 **均线偏离回归动力学（🐕 遛狗系统）**、结合 **大语言模型（LLM）两阶段智能推理** 的高频/日内量化交易系统。
 
-本项目采用 **纯 Rust** 进行重构与极致性能优化，支持编译为**单文件独立可执行程序**（Windows `.exe` / Linux 二进制，右侧 Releases 可直接下载运行），内嵌 Web 控制台与全部交易策略 Prompt，实现零外部运行时依赖（无需 Python、Node.js 等环境）即开即用。
+本项目采用 **纯 Rust** 进行重构与极致性能优化，支持编译为**单文件独立可执行程序**（Windows `.exe` / Linux 二进制，右侧 Releases 可直接下载运行）或通过 **Docker / Docker Compose** 容器化一键部署，内嵌 Web 控制台与全部交易策略 Prompt，实现零外部运行时依赖（无需 Python、Node.js 等环境）即开即用。
 
 🎮 **Discord 交流群**：[https://discord.gg/jk4mnW53gK](https://discord.gg/jk4mnW53gK)
 
@@ -30,21 +32,28 @@
 
 ---
 
-### 2. 纯 Rust 原生极速架构与单文件分发
+### 2. ⚡ 「撤旧换新 (Cancel-Replace)」防堆积挂单机制
+- **自动清理旧挂单**：新委托发出前，系统自动识别并撤销同品种此前未成交的旧限价挂单与旧突破挂单。
+- **杜绝挂单无限叠加**：保证 OKX 交易所账户中同品种永远只保留最新、最精准的有效入场委托，彻底告别历史挂单堆积问题。
+- **Web 挂单管理与一键全撤**：账户面板清晰呈现挂单明细，支持单笔撤单与「一键全撤」快速清空所有冗余挂单。
+
+---
+
+### 3. 纯 Rust 原生极速架构与单文件分发
 - **极致性能**：毫秒级响应、超低内存占用（< 20MB），基于 Tokio + Axum 高并发异步运行时。
 - **单文件独立发布（Zero Dependencies）**：通过 `rust-embed` 将 Web 控制台静态资源与 Prompt 工程规则库完全编译进二进制产物，单文件即可在任何 Windows/Linux 环境独立运行。
 - **本地系统时间日志**：控制台日志自动根据服务器/本机时区输出易读的本地时间。
 
 ---
 
-### 3. 智能环境配置向导 (Web Setup Wizard)
+### 4. 智能环境配置向导 (Web Setup Wizard)
 - **首次运行自动检测与浏览器唤起**：双击启动 `okx-2pa-agent.exe` 时，若未检测到 `.env` 或 API 密钥未配置，控制台输出提示并**自动调用系统默认浏览器**打开配置向导。
 - **一键持久化至 `.env`**：在 Web 界面中填入大模型 API Key（默认模型 `deepseek-v4-flash`、默认接口 `https://api.deepseek.com`、默认关闭思考模式）和 OKX 凭证后，点击保存将**自动写入程序根目录 `.env`**，并在内存中即时热加载生效，下次直接启动无需重复配置。
 - **顶部配置按钮**：Web 顶部栏提供「⚙️ 系统配置」入口，随时可点击修改密钥并即时生效；内置「🔗 注册okx用户」快捷开户入口。
 
 ---
 
-### 4. 📐 合约规格与张数双向换算器 (Contract Calculator)
+### 5. 📐 合约规格与张数双向换算器 (Contract Calculator)
 针对 OKX 永续合约按「张数」下单难以直观把握资金价值的问题，内置专属换算工作台：
 - **常见热门品种 1 张面值速查表**：
   - 覆盖加密主流（BTC 1张=0.01BTC、ETH 1张=0.1ETH、SOL 1张=1SOL、DOGE 1张=1000DOGE 等）、贵金属（XAU 黄金、XAG 白银）及美股 TradFi（AAPL、TSLA、NVDA、SPX）。
@@ -56,7 +65,7 @@
 
 ---
 
-### 5. 🛡️ 结构化止盈止损策略与交易所原子挂单
+### 6. 🛡️ 结构化止盈止损策略与交易所原子挂单
 - **保护性止损（Stop Loss）**：
   - 做多：信号棒低点 − 1 Tick；做空：信号棒高点 + 1 Tick。
   - 动态风控：止损距离 $> 2 \times \text{ATR14}$ 或超过通道宽度的 50% 时判定风险过大直接放弃。
@@ -68,7 +77,7 @@
 
 ---
 
-### 6. 🤖 自动交易调度与多时段管理
+### 7. 🤖 自动交易调度与多时段管理
 - **单排等宽导航栏**：【决策】 | 【账户】 | 【📐 合约换算】 | 【🤖 自动交易】，专属翠绿发光高亮。
 - **系统状态与本地记忆联动**：切换交易系统即时持久化到本地 `localStorage`，并在后台与监控面板联动展示。
 - **多时区时段过滤器**：支持全天候（always）、美股常规盘（us_regular）、美股开盘窗口（us_open）、伦敦时段（london）、亚洲时段（asia）与自定义时区时段。
@@ -107,9 +116,12 @@
 │   └── main.rs             # CLI 启动入口、本地时间日志与浏览器自动唤起
 ├── static/                 # 前端 Web 控制台页面（HTML / CSS / JS，支持双均线与双系统图表）
 ├── tests/                  # 单元测试与集成测试（19 个测试全部 PASS）
+├── .dockerignore           # Docker 忽略文件
 ├── .env.example            # 环境变量示例文件
 ├── .gitignore              # Git 忽略配置
 ├── Cargo.toml              # Rust 项目构建清单与依赖
+├── Dockerfile              # 多阶段生产级 Docker 镜像构建文件
+├── docker-compose.yml      # Docker Compose 一键启动编排配置
 ├── Makefile                # 常用构建命令集
 ├── start.bat               # Windows 一键启动脚本
 └── start.sh                # Linux/macOS 一键启动脚本
@@ -243,6 +255,8 @@ cargo test -- --nocapture
 | `GET` | `/api/instruments?inst_type=SWAP` | 查询 OKX 可交易合约/现货交易对列表 |
 | `GET` | `/api/candles?inst_id=BTC-USDT&timeframe=15m&limit=300` | 查询已计算指标的 K 线数据 (支持 300 根深度) |
 | `GET` | `/api/account` | 查询账户总览、资金余额、持仓及挂单 |
+| `POST` | `/api/trade/cancel` | 撤销指定的普通限价单或策略条件单 (`ord_id` / `algo_id`) |
+| `POST` | `/api/trade/cancel_all` | 一键撤销指定品种或所有活跃挂单与条件委托 |
 | `POST` | `/api/analyze` | 触发单次 K 线两阶段 AI 诊断与决策 (支持传入 `trading_system`) |
 | `POST` | `/api/automation` | 开启/关闭后台新 K 线闭合自动交易调度 |
 | `GET` | `/api/history/decisions` | 查询历史 AI 诊断与决策记录列表 |
