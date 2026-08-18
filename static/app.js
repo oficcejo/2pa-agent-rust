@@ -889,20 +889,37 @@ function renderPositions(rows) {
 
 function renderOrders(rows) {
   $("orderCount").textContent = rows.length;
-  const typeLabels = { limit: "限价", market: "市价", trigger: "触发", oco: "TP/SL" };
+  const typeLabels = { limit: "限价", market: "市价", trigger: "触发", oco: "TP/SL", conditional: "条件" };
   $("ordersBody").innerHTML = rows.length
     ? rows.map((row) => {
-      const direction = row.direction === "sell" ? "short" : "long";
-      const directionLabel = row.direction === "sell" ? "卖" : "买";
+      const instId = row.instId || row.instrument || "";
+      const side = row.side || row.direction || "buy";
+      const isSell = String(side).toLowerCase() === "sell";
+      const direction = isSell ? "short" : "long";
+      const directionLabel = isSell ? "卖" : "买";
+      const ordType = row.ordType || row.order_type || "limit";
+      const state = row.state || "挂单中";
+      const size = row.sz != null ? row.sz : row.size;
+      const filled = row.accFillSz != null ? row.accFillSz : (row.filled_size || 0);
+      const price = row.px || row.price || row.triggerPx || "—";
+      const ordId = row.ordId || row.order_id || "";
+      const algoId = row.algoId || row.algo_id || "";
+
+      let priceDisplay = fmt(price);
+      if (row.tpTriggerPx || row.slTriggerPx) {
+        priceDisplay = `TP ${fmt(row.tpTriggerPx || '—')}<small>SL ${fmt(row.slTriggerPx || '—')}</small>`;
+      }
+
       return `
         <tr>
-          <td><strong>${escapeHtml(row.instrument)}</strong><span class="side-label ${direction}">${directionLabel}</span></td>
-          <td>${escapeHtml(typeLabels[row.order_type] || row.order_type || "—")}<small>${escapeHtml(row.state)}</small></td>
-          <td>${fmt(row.size)}<small>已成 ${fmt(row.filled_size)}</small></td>
-          <td>${row.order_type === "oco" ? `TP ${fmt(row.take_profit_price)}<small>SL ${fmt(row.stop_loss_price)}</small>` : fmt(row.price)}</td>
+          <td><strong>${escapeHtml(instId)}</strong><span class="side-label ${direction}">${directionLabel}</span></td>
+          <td>${escapeHtml(typeLabels[ordType] || ordType)}<small>${escapeHtml(state)}</small></td>
+          <td>${fmt(size)}<small>已成 ${fmt(filled)}</small></td>
+          <td>${priceDisplay}</td>
+          <td><button class="table-action-button" style="padding:2px 8px;font-size:11px;" data-action="cancel-order" data-inst-id="${escapeHtml(instId)}" data-ord-id="${escapeHtml(ordId)}" data-algo-id="${escapeHtml(algoId)}">撤单</button></td>
         </tr>`;
     }).join("")
-    : '<tr class="empty-row"><td colspan="4">暂无挂单</td></tr>';
+    : '<tr class="empty-row"><td colspan="5">暂无挂单</td></tr>';
 }
 
 function drawEquityChart() {
@@ -1149,6 +1166,37 @@ $("decisionHistory").addEventListener("click", (event) => {
 $("tradeHistory").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-action='delete-trade']");
   if (button) deleteHistoryRecord("trades", button.dataset.id);
+});
+$("ordersBody").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-action='cancel-order']");
+  if (!button) return;
+  const instId = button.dataset.instId;
+  const ordId = button.dataset.ordId;
+  const algoId = button.dataset.algoId;
+  if (!confirm(`确认撤销 ${instId} 挂单？`)) return;
+  try {
+    await api("/api/trade/cancel", {
+      method: "POST",
+      body: JSON.stringify({ inst_id: instId, ord_id: ordId || undefined, algo_id: algoId || undefined }),
+    });
+    toast(`已提交撤销 ${instId} 挂单`);
+    await loadAccount(true);
+  } catch (err) {
+    toast(`撤单失败: ${err.message}`);
+  }
+});
+$("cancelAllOrdersBtn").addEventListener("click", async () => {
+  if (!confirm("确认一键撤销所有当前挂单与条件委托？")) return;
+  try {
+    const res = await api("/api/trade/cancel_all", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    toast(`已成功撤销 ${res.cancelled_count || 0} 个挂单`);
+    await loadAccount(true);
+  } catch (err) {
+    toast(`一键撤单失败: ${err.message}`);
+  }
 });
 $("tradingSystemSelect").addEventListener("change", async (e) => {
   currentTradingSystem = e.target.value;

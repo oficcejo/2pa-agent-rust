@@ -467,6 +467,52 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         }))
     }
 
+    pub async fn cancel_order(
+        &self,
+        inst_id: &str,
+        ord_id: Option<&str>,
+        cl_ord_id: Option<&str>,
+        algo_id: Option<&str>,
+    ) -> Result<Value> {
+        let client = self.okx_client.read().clone();
+        if let Some(aid) = algo_id {
+            if !aid.is_empty() {
+                return client.cancel_algo_order(inst_id, aid).await;
+            }
+        }
+        client.cancel_order(inst_id, ord_id, cl_ord_id).await
+    }
+
+    pub async fn cancel_all_orders(&self, inst_id: Option<&str>) -> Result<usize> {
+        let client = self.okx_client.read().clone();
+        let regular_orders = client.get_pending_orders(inst_id).await.unwrap_or_default();
+        let algo_orders = client.get_pending_algo_orders(inst_id, "trigger").await.unwrap_or_default();
+        let mut cancelled_count = 0;
+
+        for ord in regular_orders {
+            let symbol = ord.get("instId").and_then(|v| v.as_str()).unwrap_or("");
+            let ord_id = ord.get("ordId").and_then(|v| v.as_str());
+            let cl_ord_id = ord.get("clOrdId").and_then(|v| v.as_str());
+            if !symbol.is_empty() && (ord_id.is_some() || cl_ord_id.is_some()) {
+                if client.cancel_order(symbol, ord_id, cl_ord_id).await.is_ok() {
+                    cancelled_count += 1;
+                }
+            }
+        }
+
+        for algo in algo_orders {
+            let symbol = algo.get("instId").and_then(|v| v.as_str()).unwrap_or("");
+            let algo_id = algo.get("algoId").and_then(|v| v.as_str()).unwrap_or("");
+            if !symbol.is_empty() && !algo_id.is_empty() {
+                if client.cancel_algo_order(symbol, algo_id).await.is_ok() {
+                    cancelled_count += 1;
+                }
+            }
+        }
+
+        Ok(cancelled_count)
+    }
+
     pub fn decision_records(&self, limit: usize) -> Vec<Value> {
         let paths = list_record_paths(&records_dir());
         let mut records = Vec::new();

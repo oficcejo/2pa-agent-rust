@@ -224,3 +224,36 @@ pub async fn handle_set_trading_system(
     Json(service.status()).into_response()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CancelOrderRequest {
+    pub inst_id: String,
+    pub ord_id: Option<String>,
+    pub cl_ord_id: Option<String>,
+    pub algo_id: Option<String>,
+}
+
+pub async fn handle_cancel_order(
+    State(service): State<AppState>,
+    Json(req): Json<CancelOrderRequest>,
+) -> Response {
+    match service.cancel_order(&req.inst_id, req.ord_id.as_deref(), req.cl_ord_id.as_deref(), req.algo_id.as_deref()).await {
+        Ok(data) => Json(data).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CancelAllOrdersRequest {
+    pub inst_id: Option<String>,
+}
+
+pub async fn handle_cancel_all_orders(
+    State(service): State<AppState>,
+    Json(req): Json<CancelAllOrdersRequest>,
+) -> Response {
+    match service.cancel_all_orders(req.inst_id.as_deref()).await {
+        Ok(count) => Json(serde_json::json!({ "cancelled_count": count })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+

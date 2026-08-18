@@ -28,6 +28,8 @@ pub fn create_router(service: Arc<WebTradingService>) -> Router {
         .route("/api/config/save_env", post(handle_save_config))
         .route("/api/trading_system", post(handle_set_trading_system))
         .route("/api/contract/specs", get(handle_contract_specs))
+        .route("/api/trade/cancel", post(handle_cancel_order))
+        .route("/api/trade/cancel_all", post(handle_cancel_all_orders))
         .layer(CorsLayer::permissive())
         .with_state(service)
 }

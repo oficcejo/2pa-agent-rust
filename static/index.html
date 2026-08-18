@@ -191,10 +191,14 @@
           </section>
 
           <section class="account-section">
-            <div class="account-section-head"><h2>挂单</h2><span id="orderCount">0</span></div>
+            <div class="account-section-head">
+              <h2>挂单</h2>
+              <span id="orderCount">0</span>
+              <button id="cancelAllOrdersBtn" class="small-action" style="margin-left:auto;font-size:11px;padding:3px 8px;" type="button">一键全撤</button>
+            </div>
             <div class="compact-table-wrap">
               <table class="compact-table orders-table">
-                <thead><tr><th>品种</th><th>类型</th><th>数量</th><th>价格</th></tr></thead>
+                <thead><tr><th>品种</th><th>类型</th><th>数量</th><th>价格 / 触发价</th><th>操作</th></tr></thead>
                 <tbody id="ordersBody"></tbody>
               </table>
             </div>
