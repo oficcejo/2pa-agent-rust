@@ -583,6 +583,27 @@ impl OKXTradeExecutor {
             let _ = self.client.set_leverage(inst_id, &self.default_leverage.to_string(), &self.trade_mode).await;
         }
 
+        // Cancel-Replace 机制：下达新委托前，自动撤销同品种此前未成交的旧限价挂单与旧突破挂单（新委托无缝替代旧委托，不堆积订单）
+        if let Ok(old_orders) = self.client.get_pending_orders(Some(inst_id)).await {
+            for old_ord in old_orders {
+                let old_ord_id = old_ord.get("ordId").and_then(|v| v.as_str());
+                let old_cl_ord_id = old_ord.get("clOrdId").and_then(|v| v.as_str());
+                if old_ord_id.is_some() || old_cl_ord_id.is_some() {
+                    let _ = self.client.cancel_order(inst_id, old_ord_id, old_cl_ord_id).await;
+                }
+            }
+        }
+        if let Ok(old_algos) = self.client.get_pending_algo_orders(Some(inst_id), "trigger").await {
+            for old_algo in old_algos {
+                let algo_id = old_algo.get("algoId").and_then(|v| v.as_str()).unwrap_or("");
+                let cl_id = old_algo.get("algoClOrdId").and_then(|v| v.as_str()).unwrap_or("");
+                // 只撤销本系统生成的突破挂单，不影响已成交持仓附带的止盈止损条件单
+                if !algo_id.is_empty() && cl_id.starts_with(PA_CLIENT_ORDER_PREFIX) {
+                    let _ = self.client.cancel_algo_order(inst_id, algo_id).await;
+                }
+            }
+        }
+
         // Place order
         let order_res = if is_algo {
             self.client.place_algo_order(&request).await
