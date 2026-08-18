@@ -1,0 +1,9 @@
+target/
+.git/
+.github/
+.cargo/
+*.exe
+*.log
+tmp/
+.idea/
+.vscode/

@@ -159,6 +159,43 @@ cargo build --release
 
 ---
 
+## 🐳 Docker 容器化极速部署 (推荐)
+
+系统原生支持 Docker 与 Docker Compose 极速部署，自动配置多阶段构建与最小化运行环境：
+
+### 1. 使用 Docker Compose 一键启动 (最推荐)
+```bash
+# 启动服务并在后台运行
+docker compose up -d
+
+# 查看实时日志
+docker compose logs -f
+
+# 停止服务
+docker compose down
+```
+
+### 2. 手动构建与运行 Docker 镜像
+```bash
+# 1. 构建 Docker 镜像
+docker build -t okx-2pa-agent:latest .
+
+# 2. 运行容器 (挂载配置文件与记录目录)
+docker run -d \
+  --name okx-2pa-agent \
+  -p 8088:8088 \
+  -e TZ=Asia/Shanghai \
+  -v $(pwd)/.env:/app/.env \
+  -v $(pwd)/config:/app/config \
+  -v $(pwd)/records:/app/records \
+  --restart unless-stopped \
+  okx-2pa-agent:latest
+```
+
+启动完成后直接在浏览器中打开 `http://<服务器IP或127.0.0.1>:8088/` 即可使用！
+
+---
+
 ## 🌐 Web 控制台工作区
 
 启动后访问 `http://127.0.0.1:8088/` 即可进入 Web 控制台：

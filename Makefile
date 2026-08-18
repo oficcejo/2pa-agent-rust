@@ -1,4 +1,4 @@
-.PHONY: all run test check build-release clean
+.PHONY: all run test check build-release clean docker-build docker-up docker-down docker-logs
 
 all: check test
 
@@ -16,3 +16,15 @@ build-release:
 
 clean:
 	cargo clean
+
+docker-build:
+	docker build -t okx-2pa-agent:latest .
+
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f

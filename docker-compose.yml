@@ -1,0 +1,19 @@
+services:
+  okx-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: okx-2pa-agent:latest
+    container_name: okx-2pa-agent
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      - TZ=Asia/Shanghai
+      - RUST_LOG=info
+    volumes:
+      # 配置文件与环境变量持久化
+      - ./.env:/app/.env
+      - ./config:/app/config
+      # 交易审计记录与历史决策持久化
+      - ./records:/app/records
