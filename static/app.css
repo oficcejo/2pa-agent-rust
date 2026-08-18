@@ -284,6 +284,8 @@
 .github-star-topbar:hover{background:linear-gradient(180deg,#242b30 0%,#171d20 100%);border-color:#ffd166;color:#fff;box-shadow:0 0 12px rgba(255,209,102,0.35);transform:translateY(-1px)}
 .github-star-topbar .gh-icon{color:#e6edf3}
 .github-star-topbar .gh-star-badge{background:rgba(231,173,69,0.18);color:#ffd166;border:1px solid rgba(231,173,69,0.5);padding:1px 6px;border-radius:3px;font-size:11px;font-weight:700}
+.docs-link-topbar{display:inline-flex;align-items:center;gap:4px;background:#15191b;color:#a3e635;border:1px solid #365314;border-radius:4px;padding:4px 9px;font-size:12px;font-weight:600;text-decoration:none;transition:all .2s ease}
+.docs-link-topbar:hover{background:#1a2312;border-color:#84cc16;color:#bef264;box-shadow:0 0 10px rgba(163,230,53,0.35);transform:translateY(-1px)}
 .community-link-topbar{display:inline-flex;align-items:center;gap:4px;background:#15191b;color:#9cb0ba;border:1px solid #2d363b;border-radius:4px;padding:4px 9px;font-size:12px;font-weight:600;text-decoration:none;transition:all .2s ease}
 .community-link-topbar:hover{background:#1b2226;border-color:#5865F2;color:#7983f5;box-shadow:0 0 10px rgba(88,101,242,0.3)}
 
@@ -295,6 +297,8 @@
 .star-banner-text small{display:block;font-size:11px;color:#94a4ae;margin-top:2px}
 .star-banner-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
 .star-action-btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:700;text-decoration:none;transition:all .2s ease;white-space:nowrap}
+.star-action-btn.docs-btn{background:linear-gradient(180deg,#1e293b 0%,#0f172a 100%);color:#a3e635;border:1px solid #365314;box-shadow:0 2px 8px rgba(163,230,53,0.15)}
+.star-action-btn.docs-btn:hover{background:linear-gradient(180deg,#2d3748 0%,#1a202c 100%);border-color:#84cc16;color:#bef264;box-shadow:0 0 12px rgba(163,230,53,0.4);transform:translateY(-1px)}
 .star-action-btn.github-btn{background:linear-gradient(180deg,#ffd166 0%,#e0ab32 100%);color:#111416;border:1px solid #ffde8a;box-shadow:0 2px 8px rgba(231,173,69,0.3)}
 .star-action-btn.github-btn:hover{background:linear-gradient(180deg,#ffe082 0%,#e7ad45 100%);box-shadow:0 0 14px rgba(255,209,102,0.6);transform:translateY(-1px)}
 .star-action-btn.discord-btn{background:#181d22;color:#b0c2cc;border:1px solid #323d45}

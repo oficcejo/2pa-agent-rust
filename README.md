@@ -2,6 +2,7 @@
 
 [![Rust](https://img.shields.io/badge/language-Rust%201.75+-orange.svg)](https://www.rust-lang.org/)
 [![Release](https://img.shields.io/badge/Release-v0.3.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.3.0)
+[![Docs](https://img.shields.io/badge/Docs-doc.zhongdu.net-brightgreen.svg?logo=gitbook&logoColor=white)](https://doc.zhongdu.net)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white)](https://discord.gg/jk4mnW53gK)
@@ -11,7 +12,10 @@
 
 本项目采用 **纯 Rust** 进行重构与极致性能优化，支持编译为**单文件独立可执行程序**（Windows `.exe` / Linux 二进制，右侧 Releases 可直接下载运行）或通过 **Docker / Docker Compose** 容器化一键部署，内嵌 Web 控制台与全部交易策略 Prompt，实现零外部运行时依赖（无需 Python、Node.js 等环境）即开即用。
 
+📖 **官方使用文档与完整教程**：[https://doc.zhongdu.net](https://doc.zhongdu.net)  
 🎮 **Discord 交流群**：[https://discord.gg/jk4mnW53gK](https://discord.gg/jk4mnW53gK)
+
+**⚡ 高频交易推荐使用高速模型：`MiniMax-M2.7-highspeed`（闲鱼有10元包月）、`deepseek-v4-flash`、`mimo-2.5`**
 
 ---
 
@@ -266,11 +270,12 @@ cargo test -- --nocapture
 
 ---
 
-## 💬 社区与交流群
+## 📚 官方文档与社区交流
 
-欢迎加入 Discord 官方讨论组，与量化开发者及交易员共同交流 Al Brooks 价格行为学策略、遛狗均线回归策略与系统使用心得：
+- 📖 **官方使用文档与完整指南**：[https://doc.zhongdu.net](https://doc.zhongdu.net)
+- 🎮 **Discord 官方交流群**：[https://discord.gg/jk4mnW53gK](https://discord.gg/jk4mnW53gK)
 
-- 🎮 **Discord 交流群**：[https://discord.gg/jk4mnW53gK](https://discord.gg/jk4mnW53gK)
+欢迎加入 Discord 讨论组，与量化开发者及交易员共同交流 Al Brooks 价格行为学策略、遛狗均线回归策略与系统使用心得！
 
 ---
 
