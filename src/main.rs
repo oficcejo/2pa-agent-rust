@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
-#[command(name = "okx-2pa-agent", version = "0.3.0", about = "OKX AI Trading Agent in Rust")]
+#[command(name = "okx-2pa-agent", version = "0.3.1", about = "OKX AI Trading Agent in Rust")]
 struct Args {
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("====================================================");
     println!("  OKX 2PA Agent (Rust High-Performance Edition)");
-    println!("  Version: 0.3.0");
+    println!("  Version: 0.3.1");
     println!("  Listen: http://{}:{}", args.host, args.port);
     println!("====================================================");
 

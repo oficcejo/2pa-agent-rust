@@ -1,7 +1,7 @@
 # OKX 2PA Agent (Rust 高性能版)
 
 [![Rust](https://img.shields.io/badge/language-Rust%201.75+-orange.svg)](https://www.rust-lang.org/)
-[![Release](https://img.shields.io/badge/Release-v0.3.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.3.0)
+[![Release](https://img.shields.io/badge/Release-v0.3.1-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.3.1)
 [![Docs](https://img.shields.io/badge/Docs-doc.zhongdu.net-brightgreen.svg?logo=gitbook&logoColor=white)](https://doc.zhongdu.net)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
