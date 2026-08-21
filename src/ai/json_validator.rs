@@ -197,11 +197,19 @@ pub fn validate_stage2_json(val: &Value, raw_text: &str) -> Result<Value, Valida
         });
     }
 
-    // Coherence check: if order_type is 不下单, entry/stop/target should be null or 0
+    // Coherence check: if order_type is 不下单 / 持有 / 平仓 / 修改止损
     if let Some(d) = decision {
         let order_type = d.get("order_type").and_then(|v| v.as_str()).unwrap_or("");
-        if order_type == "不下单" {
-            // prices must be empty or null
+        let action = d.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        
+        if order_type == "不下单" || order_type == "持有" || order_type == "平仓" || action == "HOLD" || action == "CLOSE_EARLY" || action == "WAIT" {
+            // prices can be empty or null
+        } else if order_type == "修改止损" || action == "MOVE_STOP_LOSS" {
+            let new_sl = d.get("new_stop_loss_price").and_then(|v| v.as_f64())
+                .or_else(|| d.get("stop_loss_price").and_then(|v| v.as_f64()));
+            if new_sl.is_none() || new_sl.unwrap() <= 0.0 {
+                invalid.push("修改止损必须提供有效的 new_stop_loss_price 或 stop_loss_price".to_string());
+            }
         } else if ["限价单", "突破单", "市价单"].contains(&order_type) {
             let entry = d.get("entry_price").and_then(|v| v.as_f64());
             let stop = d.get("stop_loss_price").and_then(|v| v.as_f64());

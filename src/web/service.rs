@@ -1,6 +1,6 @@
 use crate::config::paths::{records_dir, settings_json_path};
 use crate::config::settings::Settings;
-use crate::data::base::KlineBar;
+use crate::data::base::{KlineBar, PositionContext};
 use crate::data::snapshot::{build_analysis_frame, build_live_frame, INDICATOR_WARMUP_BARS};
 use crate::okx::client::{OKXClient, OKXCredentials};
 use crate::okx::trading::{AuditEntry, OKXTradeExecutor, BROKER_TAG};
@@ -595,9 +595,58 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         let frame = build_analysis_frame(&raw_bars, bar_count, inst_id, timeframe, None)
             .ok_or_else(|| anyhow!("not enough closed OKX candles to build {}-bar analysis", bar_count))?;
 
+        let client = self.okx_client.read().clone();
+
+        // 1. 实时获取 OKX 当前品种的活跃持仓状态与生效中的止盈止损
+        let mut pos_ctx = PositionContext {
+            has_position: false,
+            symbol: inst_id.to_string(),
+            pos_side: "none".to_string(),
+            pos_size: "0".to_string(),
+            mgn_mode: "cross".to_string(),
+            ..Default::default()
+        };
+
+        if let Ok(positions) = client.get_positions(Some(inst_id)).await {
+            for p in positions {
+                let sz_str = p.get("pos").and_then(|v| v.as_str()).unwrap_or("0");
+                if let Ok(sz) = sz_str.parse::<f64>() {
+                    if sz.abs() > 1e-6 {
+                        pos_ctx.has_position = true;
+                        pos_ctx.pos_side = if sz > 0.0 { "long".to_string() } else { "short".to_string() };
+                        pos_ctx.pos_size = sz.abs().to_string();
+                        pos_ctx.open_avg_px = p.get("avgPx").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+                        pos_ctx.mark_px = p.get("markPx").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+                        pos_ctx.unrealized_pnl = p.get("upl").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+                        pos_ctx.unrealized_pnl_ratio = p.get("uplRatio").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).map(|r: f64| r * 100.0);
+                        pos_ctx.leverage = p.get("lever").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+                        pos_ctx.mgn_mode = p.get("mgnMode").and_then(|v| v.as_str()).unwrap_or("cross").to_string();
+                        pos_ctx.open_time_ms = p.get("cTime").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+                        break;
+                    }
+                }
+            }
+        }
+
+        if pos_ctx.has_position {
+            if let Ok(algos) = client.get_pending_algo_orders(Some(inst_id), "conditional").await {
+                for a in algos {
+                    if let Some(sl) = a.get("slTriggerPx").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()) {
+                        pos_ctx.current_sl = Some(sl);
+                    }
+                    if let Some(tp) = a.get("tpTriggerPx").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()) {
+                        pos_ctx.current_tp = Some(tp);
+                    }
+                    if let Some(aid) = a.get("algoId").and_then(|v| v.as_str()) {
+                        pos_ctx.algo_id = Some(aid.to_string());
+                    }
+                }
+            }
+        }
+
         let record = {
             let orch = self.orchestrator.read().clone();
-            orch.run_analysis_with_system(&frame, &system).await?
+            orch.run_analysis_with_system_and_pos(&frame, &system, Some(&pos_ctx)).await?
         };
 
         let mut execution_res = Value::Null;
@@ -605,11 +654,132 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             if let Some(dec_wrap) = &record.stage2_decision {
                 let dec = dec_wrap.get("decision").unwrap_or(dec_wrap);
                 let order_type = dec.get("order_type").and_then(|v| v.as_str()).unwrap_or("");
-                if ["限价单", "突破单", "市价单"].contains(&order_type) {
+                let action = dec.get("action").and_then(|v| v.as_str()).unwrap_or("");
+
+                if ["限价单", "突破单", "市价单"].contains(&order_type) || action == "OPEN" {
                     let sig_ts = frame.bars.first().map(|b| b.ts_open).unwrap_or(0);
                     let executor = self.executor.read().clone();
                     let result = executor.execute(inst_id, timeframe, sig_ts, dec).await;
                     execution_res = serde_json::to_value(result).unwrap_or(Value::Null);
+                } else if order_type == "平仓" || action == "CLOSE_EARLY" {
+                    if pos_ctx.has_position {
+                        info!("Executing CLOSE_EARLY for {}...", inst_id);
+                        match client.close_position(inst_id, &pos_ctx.mgn_mode, None).await {
+                            Ok(res) => {
+                                execution_res = serde_json::json!({
+                                    "submitted": true,
+                                    "action": "CLOSE_EARLY",
+                                    "symbol": inst_id,
+                                    "reason": "AI 主动平仓 (CLOSE_EARLY) 离场成功",
+                                    "response": res
+                                });
+                            }
+                            Err(e) => {
+                                execution_res = serde_json::json!({
+                                    "submitted": false,
+                                    "action": "CLOSE_EARLY",
+                                    "symbol": inst_id,
+                                    "reason": format!("AI 主动平仓失败: {}", e)
+                                });
+                            }
+                        }
+                    } else {
+                        execution_res = serde_json::json!({
+                            "submitted": false,
+                            "action": "CLOSE_EARLY",
+                            "symbol": inst_id,
+                            "reason": "当前无持仓，无需执行平仓"
+                        });
+                    }
+                } else if order_type == "修改止损" || action == "MOVE_STOP_LOSS" {
+                    let new_sl = dec.get("new_stop_loss_price").and_then(|v| v.as_f64())
+                        .or_else(|| dec.get("stop_loss_price").and_then(|v| v.as_f64()));
+
+                    if let Some(n_sl) = new_sl {
+                        if pos_ctx.has_position {
+                            // 铁律校验：单向移损（多单只能上移，空单只能下移）
+                            let is_long = pos_ctx.pos_side == "long";
+                            let is_valid_trailing = match pos_ctx.current_sl {
+                                Some(cur_sl) => {
+                                    if is_long { n_sl > cur_sl } else { n_sl < cur_sl }
+                                }
+                                None => true,
+                            };
+
+                            if is_valid_trailing {
+                                info!("Executing MOVE_STOP_LOSS for {} to {}...", inst_id, n_sl);
+                                let mut amend_success = false;
+                                if let Some(algo_id) = &pos_ctx.algo_id {
+                                    if let Ok(res) = client.amend_algo_order(inst_id, algo_id, Some(n_sl), None).await {
+                                        amend_success = true;
+                                        execution_res = serde_json::json!({
+                                            "submitted": true,
+                                            "action": "MOVE_STOP_LOSS",
+                                            "symbol": inst_id,
+                                            "new_stop_loss": n_sl,
+                                            "reason": format!("已成功修改 OKX 止损委托至 {}", n_sl),
+                                            "response": res
+                                        });
+                                    }
+                                }
+
+                                if !amend_success {
+                                    // 若无现有 algo 或修改失败，撤销同品种旧条件单并重新下达保护止损
+                                    if let Ok(old_algos) = client.get_pending_algo_orders(Some(inst_id), "conditional").await {
+                                        for a in old_algos {
+                                            if let Some(aid) = a.get("algoId").and_then(|v| v.as_str()) {
+                                                let _ = client.cancel_algo_order(inst_id, aid).await;
+                                            }
+                                        }
+                                    }
+                                    let close_side = if is_long { "sell" } else { "buy" };
+                                    let algo_payload = serde_json::json!({
+                                        "instId": inst_id,
+                                        "tdMode": pos_ctx.mgn_mode,
+                                        "side": close_side,
+                                        "ordType": "conditional",
+                                        "sz": pos_ctx.pos_size,
+                                        "slTriggerPx": n_sl.to_string(),
+                                        "slOrdPx": "-1"
+                                    });
+                                    match client.place_algo_order(&algo_payload).await {
+                                        Ok(res) => {
+                                            execution_res = serde_json::json!({
+                                                "submitted": true,
+                                                "action": "MOVE_STOP_LOSS",
+                                                "symbol": inst_id,
+                                                "new_stop_loss": n_sl,
+                                                "reason": format!("已重新挂设保护止损至 {}", n_sl),
+                                                "response": res
+                                            });
+                                        }
+                                        Err(e) => {
+                                            execution_res = serde_json::json!({
+                                                "submitted": false,
+                                                "action": "MOVE_STOP_LOSS",
+                                                "symbol": inst_id,
+                                                "reason": format!("设置保护止损失败: {}", e)
+                                            });
+                                        }
+                                    }
+                                }
+                            } else {
+                                execution_res = serde_json::json!({
+                                    "submitted": false,
+                                    "action": "MOVE_STOP_LOSS",
+                                    "symbol": inst_id,
+                                    "reason": format!("拒绝逆向扩大止损扛单！当前止损: {:?}, 目标止损: {}", pos_ctx.current_sl, n_sl)
+                                });
+                            }
+                        } else {
+                            execution_res = serde_json::json!({
+                                "submitted": false,
+                                "action": "MOVE_STOP_LOSS",
+                                "symbol": inst_id,
+                                "reason": "当前无持仓，无法移动止损"
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -626,6 +796,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             "trading_system": system,
             "system_name": system_name,
             "signal_bar_ts": frame.bars.first().map(|b| b.ts_open).unwrap_or(0),
+            "position_context": pos_ctx,
             "stage1": record.stage1_diagnosis,
             "stage2": record.stage2_decision,
             "decision": record.stage2_decision.as_ref().and_then(|d| d.get("decision")),

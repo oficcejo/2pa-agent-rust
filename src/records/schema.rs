@@ -44,6 +44,8 @@ pub struct AnalysisRecord {
     #[serde(default)]
     pub experience_loaded: Vec<Value>,
     #[serde(default)]
+    pub position_context: Option<Value>,
+    #[serde(default)]
     pub exception: Option<Value>,
     #[serde(default)]
     pub usage_total: Value,

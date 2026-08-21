@@ -104,16 +104,47 @@
 
 ---
 
-## 三、阶段二 JSON 输出格式规范
+## 三、持仓全生命周期管理规则（已有持仓时的决策规范）
+
+当 Prompt 中的 `【当前账户持仓与实时风控状态】` 显示**【持仓中】**时，阶段二的核心任务转为**持仓跟踪与风险/利润管理**，必须遵循以下规则：
+
+### 1. 移动保本止损（`action: "MOVE_STOP_LOSS"`, `order_type: "修改止损"`）
+- **触发条件**：
+  1. 当前持仓已产生安全浮盈（未实现浮盈 $\ge 1.5 \times \text{ATR14}$ 或净利润 $> 10$ 点）；
+  2. 价格已经有效脱离成本区（例如空单价格已跌破 SMA 14 均线并向 SMA 170 推进）；
+- **操作规范**：
+  - 输出 `action: "MOVE_STOP_LOSS"`, `order_type: "修改止损"`, `new_stop_loss_price: <新止损价>`；
+  - **空单**：将止损下移至开仓均价（保本位）或最新反弹高点/SMA 14 上方；
+  - **多单**：将止损上移至开仓均价（保本位）或最新回踩低点/SMA 14 下方；
+  - **🛡️ 铁律**：**只能单向移损锁利（多单上移，空单下移），绝对禁止为了逃避止损而反向扩大止损扛单！**
+
+### 2. 主动提前平仓（`action: "CLOSE_EARLY"`, `order_type: "平仓"`）
+- **触发条件**：
+  1. 出现极度危险的反向剧烈破位（例如持空单但多头突然爆出特大暴涨阳线收复 14 均线，小狗完全拒绝回归）；
+  2. 或者阶段一诊断出原有的回归逻辑已被彻底推翻；
+- **操作规范**：
+  - 输出 `action: "CLOSE_EARLY"`, `order_type: "平仓"`，立即以最小代价离场，无需死等打中原始硬止损。
+
+### 3. 继续持有（`action: "HOLD"`, `order_type: "持有"`）
+- **触发条件**：
+  1. 行情正顺畅向 SMA 170 目标推进，尚未达到 TP 止盈，也没有出现危险破位信号；
+- **操作规范**：
+  - 输出 `action: "HOLD"`, `order_type: "持有"`，保持当前仓位与止损不动，让利润奔跑。
+
+---
+
+## 四、阶段二 JSON 输出格式规范
 
 ```json
 {
   "trading_system": "dog_walking",
   "decision": {
-    "order_type": "市价单" | "限价单" | "突破单" | "不下单",
+    "action": "OPEN" | "HOLD" | "MOVE_STOP_LOSS" | "CLOSE_EARLY" | "WAIT",
+    "order_type": "市价单" | "限价单" | "突破单" | "修改止损" | "平仓" | "持有" | "不下单",
     "order_direction": "做多" | "做空" | null,
     "entry_price": 1965.2,
     "stop_loss_price": 1988.0,
+    "new_stop_loss_price": 1960.0,
     "take_profit_price": 1916.5,
     "take_profit_price_2": 1940.0,
     "trade_confidence": 85,
@@ -121,21 +152,20 @@
     "estimated_win_rate_reasoning": "极端上方偏离（3.2 ATR）叠加 K 线收出长上影 Pinbar 并跌破 14 均线，历史均线回归统计胜率约 70%",
     "risk_reward_ratio": 2.14,
     "traders_equation_passes": true,
-    "reasoning": "通俗决策理由：小狗已经在 170 均线上方极度狂奔，当前在 1985 附近疲惫见顶，并收阴跌破 14 橙色狗绳，说明绳索弹力已经生效。入场做空，止损放在前高 1988 上方，止盈直指 170 均线 1916.5 位置，回归空间巨大，盈亏比达到 2.14，符合遛狗系统高胜率规范。"
+    "reasoning": "通俗决策理由：说明开仓、持有、移动止损保本或主动离场的充分逻辑依据。"
   },
   "decision_trace": [
-    { "node": "阶段一闸门检查", "result": "通过 (proceed)" },
-    { "node": "策略路由", "result": "匹配策略 A-1 偏离回归做空" },
-    { "node": "交易者方程核算", "result": "风险 22.8 点，回归 170 均线利润 48.7 点，盈亏比 2.14 > 1.2，通过" }
+    { "node": "持仓状态评估", "result": "当前持仓浮盈 +35 点，已满足移损保本条件" },
+    { "node": "策略路由", "result": "执行移动止损锁定利润" }
   ],
   "terminal": {
-    "outcome": "trade",
-    "label": "遛狗回归做空 (奔向 170 均线)",
-    "node_id": "DOG_LEASH_SHORT_TO_SMA170"
+    "outcome": "trade" | "hold" | "move_stop" | "close" | "wait",
+    "label": "移动保本止损至 1960" | "遛狗回归做空" | "继续持有" | "观望",
+    "node_id": "DOG_MOVE_SL_BREAKEVEN"
   },
   "watch_points": [
     "观察价格跌至 14 均线下方后的跟随速度",
-    "警惕若强势突破 1988 前高则立即宣告回归假设失效"
+    "价格接近 170 均线时准备全额止盈"
   ],
   "invalidation_condition": "价格强势突破并收盘站上 1988 前高"
 }

@@ -339,6 +339,49 @@ impl OKXClient {
         }
         Ok(result)
     }
+
+    pub async fn close_position(&self, inst_id: &str, mgn_mode: &str, pos_side: Option<&str>) -> Result<Value> {
+        let mut payload = serde_json::json!({
+            "instId": inst_id,
+            "mgnMode": mgn_mode,
+        });
+        if let Some(side) = pos_side {
+            if !side.is_empty() {
+                payload["posSide"] = serde_json::json!(side);
+            }
+        }
+        let data = self.request(reqwest::Method::POST, "/api/v5/trade/close-position", None, Some(&payload), true).await?;
+        let result = data.into_iter().next().unwrap_or_default();
+        let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
+        if s_code != "0" {
+            let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("Close position rejected");
+            return Err(anyhow!("OKX close position failed [{}]: {}", s_code, s_msg));
+        }
+        Ok(result)
+    }
+
+    pub async fn amend_algo_order(&self, inst_id: &str, algo_id: &str, new_sl: Option<f64>, new_tp: Option<f64>) -> Result<Value> {
+        let mut payload = serde_json::json!({
+            "instId": inst_id,
+            "algoId": algo_id,
+        });
+        if let Some(sl) = new_sl {
+            payload["newSlTriggerPx"] = serde_json::json!(sl.to_string());
+            payload["newSlOrdPx"] = serde_json::json!("-1"); // 市价触发
+        }
+        if let Some(tp) = new_tp {
+            payload["newTpTriggerPx"] = serde_json::json!(tp.to_string());
+            payload["newTpOrdPx"] = serde_json::json!("-1");
+        }
+        let data = self.request(reqwest::Method::POST, "/api/v5/trade/amend-algos", None, Some(&payload), true).await?;
+        let result = data.into_iter().next().unwrap_or_default();
+        let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
+        if s_code != "0" {
+            let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("Amend algo rejected");
+            return Err(anyhow!("OKX amend algo failed [{}]: {}", s_code, s_msg));
+        }
+        Ok(result)
+    }
 }
 
 pub fn format_okx_trade_error(code: &str, msg: &str, s_code: &str, s_msg: &str) -> String {

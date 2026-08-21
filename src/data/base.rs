@@ -59,3 +59,22 @@ pub struct KlineFrame {
     pub indicators: IndicatorBundle,
     pub snapshot_ts_local_ms: i64,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PositionContext {
+    pub has_position: bool,
+    pub symbol: String,
+    pub pos_side: String,                  // "long", "short", "none"
+    pub pos_size: String,                  // 张数或币数
+    pub open_avg_px: Option<f64>,          // 开仓均价
+    pub mark_px: Option<f64>,              // 当前标记价
+    pub unrealized_pnl: Option<f64>,       // 未实现盈亏 (USDT)
+    pub unrealized_pnl_ratio: Option<f64>, // 浮盈比例 (%)
+    pub leverage: Option<f64>,
+    pub mgn_mode: String,
+    pub open_time_ms: Option<i64>,
+    pub current_sl: Option<f64>,           // 当前生效的硬止损价
+    pub current_tp: Option<f64>,           // 当前生效的硬止盈价
+    pub algo_id: Option<String>,           // 绑定的策略委托/止损单 ID
+}
+

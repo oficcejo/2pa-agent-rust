@@ -191,6 +191,46 @@ pub fn render_geometry_features_table(frame: &KlineFrame) -> String {
     s
 }
 
+use crate::data::base::PositionContext;
+
+pub fn render_position_context_section(pos: Option<&PositionContext>) -> String {
+    match pos {
+        Some(p) if p.has_position => {
+            let side_zh = if p.pos_side.eq_ignore_ascii_case("long") { "做多 (Long)" } else { "做空 (Short)" };
+            let pnl_str = match (p.unrealized_pnl, p.unrealized_pnl_ratio) {
+                (Some(pnl), Some(ratio)) => format!("{:+.4} USDT ({:+.2}%)", pnl, ratio),
+                _ => "未知".to_string(),
+            };
+            let open_px_str = p.open_avg_px.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "未知".to_string());
+            let mark_px_str = p.mark_px.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "未知".to_string());
+            let sl_str = p.current_sl.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "未设置".to_string());
+            let tp_str = p.current_tp.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "未设置".to_string());
+
+            format!(
+                "## 🛡️ 【当前账户持仓与实时风控状态】\n\
+                 - **当前持仓状态**：【持仓中】\n\
+                 - **持仓品种与方向**：{} | 方向：{}\n\
+                 - **持仓数量**：{} 张/币\n\
+                 - **开仓均价**：{} ──> **当前标记价**：{}\n\
+                 - **未实现浮动盈亏**：{}\n\
+                 - **当前生效中的止损价 (SL)**：{}\n\
+                 - **当前生效中的止盈价 (TP)**：{}\n\n\
+                 ⚠️ **【持仓生命周期管理规则】**：\n\
+                 1. 若行情正沿预期发展且已累积安全浮盈（>= 1.5 ATR），请评估是否输出 `action: \"MOVE_STOP_LOSS\"` 将止损向有利方向移动（提损保本/锁定利润，多单只能上移，空单只能下移，严禁反向扩大止损！）；\n\
+                 2. 若行情顺畅且未达到移损/平仓条件，输出 `action: \"HOLD\"` 继续持有；\n\
+                 3. 若原开仓逻辑被重大反向信号彻底破坏，请输出 `action: \"CLOSE_EARLY\"` 主动平仓规避风险；\n\
+                 4. 已有持仓时，禁止下达同向或反向的新开仓订单。",
+                p.symbol, side_zh, p.pos_size, open_px_str, mark_px_str, pnl_str, sl_str, tp_str
+            )
+        },
+        _ => {
+            "## 🛡️ 【当前账户持仓与实时风控状态】\n\
+             - **当前持仓状态**：【空仓 (No Open Position)】\n\
+             - **操作指引**：当前无任何持仓，可正常评估市场并决策是否输出 `action: \"OPEN\"`（开仓）或 `action: \"WAIT\"`（观望）。".to_string()
+        }
+    }
+}
+
 pub fn build_stage1_prompt(frame: &KlineFrame, prompt_dir: Option<&Path>) -> String {
     build_stage1_prompt_for_system("2pa", frame, prompt_dir)
 }
@@ -202,6 +242,7 @@ pub fn build_stage2_prompt(
     load_all_strategies: bool,
     prompt_dir: Option<&Path>,
     experience_dir: Option<&Path>,
+    position_context: Option<&PositionContext>,
 ) -> (String, Vec<String>, Vec<ExperienceEntry>) {
     build_stage2_prompt_for_system(
         "2pa",
@@ -211,6 +252,7 @@ pub fn build_stage2_prompt(
         load_all_strategies,
         prompt_dir,
         experience_dir,
+        position_context,
     )
 }
 
@@ -268,7 +310,10 @@ pub fn build_stage2_prompt_for_system(
     load_all_strategies: bool,
     prompt_dir: Option<&Path>,
     experience_dir: Option<&Path>,
+    position_context: Option<&PositionContext>,
 ) -> (String, Vec<String>, Vec<ExperienceEntry>) {
+    let position_section = render_position_context_section(position_context);
+
     if system.eq_ignore_ascii_case("dog_walking") || system.contains("遛狗") {
         let persona = get_prompt_file("遛狗系统_人设与思维方式.txt", prompt_dir);
         let strategy = get_prompt_file("遛狗系统_交易决策策略.txt", prompt_dir);
@@ -276,12 +321,13 @@ pub fn build_stage2_prompt_for_system(
         let kline_table = render_dog_walking_kline_table(frame);
 
         let prompt = format!(
-            "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## 阶段一诊断结果\n```json\n{}\n```\n\n## 最新 K 线及双均线偏离数据\n{}\n\n请根据阶段一诊断、遛狗交易策略库及交易倾向，输出【阶段二：交易决策】纯 JSON 格式（偏离回归单核心止盈目标请严格对齐当前 SMA 170 价格）。",
+            "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## 阶段一诊断结果\n```json\n{}\n```\n\n## 最新 K 线及双均线偏离数据\n{}\n\n请根据【当前账户持仓状态】、阶段一诊断、遛狗交易策略库及交易倾向，输出【阶段二：交易决策与持仓生命周期管理】纯 JSON 格式（偏离回归单核心止盈目标请严格对齐当前 SMA 170 价格）。",
             DOG_WALKING_STAGE2_SYSTEM_PROMPT,
             LANGUAGE_ZH_RULE,
             persona,
             strategy,
             stance_guidance,
+            position_section,
             serde_json::to_string_pretty(stage1_diagnosis).unwrap_or_default(),
             kline_table
         );
@@ -329,10 +375,11 @@ pub fn build_stage2_prompt_for_system(
         let kline_table = render_kline_table(frame);
 
         let prompt = format!(
-            "{}\n\n{}\n\n{}\n\n## 阶段一诊断结果\n```json\n{}\n```\n\n## 适用策略库规则{}\n{}\n\n## 最新 K 线数据\n{}\n\n请根据阶段一诊断、策略库及交易倾向，输出【阶段二：交易决策】纯 JSON 格式。",
+            "{}\n\n{}\n\n{}\n\n{}\n\n## 阶段一诊断结果\n```json\n{}\n```\n\n## 适用策略库规则{}\n{}\n\n## 最新 K 线数据\n{}\n\n请根据【当前账户持仓状态】、阶段一诊断、策略库及交易倾向，输出【阶段二：交易决策与持仓生命周期管理】纯 JSON 格式。",
             STAGE2_SYSTEM_PROMPT,
             LANGUAGE_ZH_RULE,
             stance_guidance,
+            position_section,
             serde_json::to_string_pretty(stage1_diagnosis).unwrap_or_default(),
             strategy_contents,
             experience_text,

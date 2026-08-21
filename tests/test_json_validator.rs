@@ -61,4 +61,38 @@ fn test_stage2_validation() {
         }
     });
     assert!(validate_stage2_json(&invalid_stop_loss, "").is_err());
+
+    // Valid MOVE_STOP_LOSS
+    let valid_move_sl = serde_json::json!({
+        "decision": {
+            "action": "MOVE_STOP_LOSS",
+            "order_type": "修改止损",
+            "order_direction": "做空",
+            "new_stop_loss_price": 2280.0,
+            "trade_confidence": 90
+        }
+    });
+    assert!(validate_stage2_json(&valid_move_sl, "").is_ok());
+
+    // Valid CLOSE_EARLY
+    let valid_close_early = serde_json::json!({
+        "decision": {
+            "action": "CLOSE_EARLY",
+            "order_type": "平仓",
+            "order_direction": "做空",
+            "trade_confidence": 85
+        }
+    });
+    assert!(validate_stage2_json(&valid_close_early, "").is_ok());
+
+    // Valid HOLD
+    let valid_hold = serde_json::json!({
+        "decision": {
+            "action": "HOLD",
+            "order_type": "持有",
+            "order_direction": "做多",
+            "trade_confidence": 80
+        }
+    });
+    assert!(validate_stage2_json(&valid_hold, "").is_ok());
 }

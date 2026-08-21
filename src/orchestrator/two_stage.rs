@@ -1,7 +1,7 @@
 use crate::ai::client::AIClient;
 use crate::ai::prompt_assembler::{build_stage1_prompt_for_system, build_stage2_prompt_for_system};
 use crate::config::settings::Settings;
-use crate::data::base::KlineFrame;
+use crate::data::base::{KlineFrame, PositionContext};
 use crate::orchestrator::validation_retry::{call_and_validate_stage1, call_and_validate_stage2};
 use crate::records::history::save_record;
 use crate::records::schema::{AnalysisRecord, RecordMeta};
@@ -43,10 +43,19 @@ impl TwoStageOrchestrator {
 
     pub async fn run_analysis(&self, frame: &KlineFrame) -> Result<AnalysisRecord> {
         let system = self.settings.general.trading_system.clone();
-        self.run_analysis_with_system(frame, &system).await
+        self.run_analysis_with_system_and_pos(frame, &system, None).await
     }
 
     pub async fn run_analysis_with_system(&self, frame: &KlineFrame, system: &str) -> Result<AnalysisRecord> {
+        self.run_analysis_with_system_and_pos(frame, system, None).await
+    }
+
+    pub async fn run_analysis_with_system_and_pos(
+        &self,
+        frame: &KlineFrame,
+        system: &str,
+        pos_ctx: Option<&PositionContext>,
+    ) -> Result<AnalysisRecord> {
         info!("Starting Stage 1 analysis for {} ({}) using system [{}]...", frame.symbol, frame.timeframe, system);
 
         let stage1_prompt = build_stage1_prompt_for_system(system, frame, self.prompt_dir.as_deref());
@@ -66,6 +75,7 @@ impl TwoStageOrchestrator {
             self.settings.prompt.stage2_load_full_strategy_library,
             self.prompt_dir.as_deref(),
             self.experience_dir.as_deref(),
+            pos_ctx,
         );
 
         let (stage2_decision, stage2_reply, stage2_messages) = call_and_validate_stage2(
@@ -105,6 +115,8 @@ impl TwoStageOrchestrator {
         let total_prompt = stage1_reply.usage.prompt_tokens + stage2_reply.usage.prompt_tokens;
         let total_completion = stage1_reply.usage.completion_tokens + stage2_reply.usage.completion_tokens;
 
+        let pos_val = pos_ctx.and_then(|p| serde_json::to_value(p).ok());
+
         let record = AnalysisRecord {
             meta: RecordMeta {
                 timestamp_local_iso: now_local_iso(),
@@ -140,6 +152,7 @@ impl TwoStageOrchestrator {
             stage2_decision: Some(stage2_decision),
             strategy_files_used: strategies_used,
             experience_loaded: exp_loaded_values,
+            position_context: pos_val,
             exception: None,
             usage_total: serde_json::json!({
                 "prompt_tokens": total_prompt,

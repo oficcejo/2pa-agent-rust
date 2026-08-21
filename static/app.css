@@ -308,3 +308,11 @@
 #tradingSystemSelect{font-weight:600;color:#f8fafc;border-color:#3d484e;background:#161b1e}
 #tradingSystemSelect:hover{border-color:#5a6870}
 #cfgTradingSystem{font-weight:600;color:#f8fafc;background:#161b1e}
+
+/* 实时持仓上下文徽章样式 */
+.position-context-badge{margin-bottom:12px;padding:8px 12px;border-radius:4px;background:#162024;border:1px solid #293840;font-size:12px;line-height:1.5;color:#94bcd0}
+.position-context-badge.long{background:#10241c;border-color:#1c4837;color:#4ade80}
+.position-context-badge.short{background:#261417;border-color:#4d2228;color:#f87171}
+.position-context-badge strong{font-weight:700}
+.position-context-badge small{font-size:11px;opacity:0.9}
+

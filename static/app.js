@@ -604,17 +604,63 @@ function drawChart() {
 
 function renderDecision(result) {
   const decision = result.decision || {};
-  const direction = decision.order_direction || "不下单";
+  const action = decision.action || "";
+  const orderType = decision.order_type || "";
+  let direction = decision.order_direction || "不下单";
+
+  if (action === "MOVE_STOP_LOSS" || orderType === "修改止损") {
+    direction = "🛡️ 移动止损";
+  } else if (action === "CLOSE_EARLY" || orderType === "平仓") {
+    direction = "🚪 主动平仓";
+  } else if (action === "HOLD" || orderType === "持有") {
+    direction = "💎 继续持有";
+  }
+
   const sys = result.trading_system || result.meta?.trading_system || currentTradingSystem;
   $("decisionDirection").textContent = direction;
-  $("decisionDirection").className = `direction ${direction === "做多" ? "long" : direction === "做空" ? "short" : "neutral"}`;
+  
+  let dirClass = "neutral";
+  if (direction === "做多" || direction.includes("做多")) dirClass = "long";
+  else if (direction === "做空" || direction.includes("做空")) dirClass = "short";
+  else if (action === "MOVE_STOP_LOSS" || orderType === "修改止损") dirClass = "long";
+  else if (action === "CLOSE_EARLY" || orderType === "平仓") dirClass = "short";
+  else if (action === "HOLD" || orderType === "持有") dirClass = "long";
+  
+  $("decisionDirection").className = `direction ${dirClass}`;
   $("confidence").textContent = `信心 ${decision.trade_confidence ?? "—"}%`;
-  $("orderType").textContent = decision.order_type || "—";
+  $("orderType").textContent = decision.order_type || (action ? action : "—");
   $("entryPrice").textContent = fmt(decision.entry_price);
-  $("stopPrice").textContent = fmt(decision.stop_loss_price);
+  
+  const stopDisplay = decision.new_stop_loss_price != null 
+    ? `${fmt(decision.new_stop_loss_price)} (新止损)` 
+    : fmt(decision.stop_loss_price);
+  $("stopPrice").textContent = stopDisplay;
+  
   $("targetPrice").textContent = decision.take_profit_price != null ? `${fmt(decision.take_profit_price)}${sys === "dog_walking" ? " (170均线)" : ""}` : "—";
   $("target2Price").textContent = fmt(decision.take_profit_price_2);
   $("winRate").textContent = decision.estimated_win_rate == null ? "—" : `${decision.estimated_win_rate}%`;
+
+  // Render Position Context Badge
+  const posBadge = $("positionContextBadge");
+  const posCtx = result.position_context || result.position;
+  if (posBadge) {
+    if (posCtx && posCtx.has_position) {
+      const isLong = (posCtx.pos_side || "").toLowerCase() === "long";
+      posBadge.hidden = false;
+      posBadge.className = `position-context-badge ${isLong ? "long" : "short"}`;
+      const pnlText = posCtx.unrealized_pnl_ratio != null 
+        ? `${posCtx.unrealized_pnl_ratio >= 0 ? "+" : ""}${Number(posCtx.unrealized_pnl_ratio).toFixed(2)}%` 
+        : "—";
+      const pnlUsdt = posCtx.unrealized_pnl != null 
+        ? ` (${posCtx.unrealized_pnl >= 0 ? "+" : ""}${Number(posCtx.unrealized_pnl).toFixed(2)} U)` 
+        : "";
+      const slText = posCtx.current_sl ? fmt(posCtx.current_sl) : "未设";
+      posBadge.innerHTML = `<strong>🛡️ 当前实盘持仓：</strong>${isLong ? "做多" : "做空"} <b>${posCtx.pos_size}</b> 张 | 均价 <b>${fmt(posCtx.open_avg_px)}</b> | 浮盈 <b style="color:${posCtx.unrealized_pnl_ratio >= 0 ? 'var(--green)' : 'var(--red)'}">${pnlText}${pnlUsdt}</b> | 挂设止损 <b>${slText}</b>`;
+    } else {
+      posBadge.hidden = true;
+      posBadge.innerHTML = "";
+    }
+  }
 
   const reasoningPrefix = sys === "dog_walking" ? "【🐕 遛狗系统决策】" : "【📊 2PA 价格行为决策】";
   $("reasoning").textContent = decision.reasoning ? `${reasoningPrefix}\n${decision.reasoning}` : (result.exception?.message || "无交易决策");

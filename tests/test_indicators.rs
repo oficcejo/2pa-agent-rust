@@ -110,7 +110,7 @@ fn test_dog_walking_prompts() {
         "dominant_force": "bears",
         "gate_result": "proceed"
     });
-    let (p2, strat, _) = build_stage2_prompt_for_system("dog_walking", &frame, &diag, "balanced", false, None, None);
+    let (p2, strat, _) = build_stage2_prompt_for_system("dog_walking", &frame, &diag, "balanced", false, None, None, None);
     assert!(p2.contains("遛狗系统"));
     assert_eq!(strat, vec!["遛狗系统_交易决策策略.txt"]);
 }
