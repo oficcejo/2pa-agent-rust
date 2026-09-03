@@ -49,6 +49,23 @@ pub fn sma_incremental(state: &mut SmaState, x: f64) -> f64 {
     }
 }
 
+/// Calculate the per-bar slope of SMA over a lookback window (e.g. 5 or 10 bars)
+pub fn sma_slope(sma_values: &[f64], lookback: usize) -> Vec<f64> {
+    let n = sma_values.len();
+    let mut slopes = vec![f64::NAN; n];
+    if lookback == 0 || n <= lookback {
+        return slopes;
+    }
+    for i in lookback..n {
+        let cur = sma_values[i];
+        let prev = sma_values[i - lookback];
+        if !cur.is_nan() && !prev.is_nan() {
+            slopes[i] = (cur - prev) / (lookback as f64);
+        }
+    }
+    slopes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

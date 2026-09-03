@@ -36,6 +36,9 @@ async fn test_build_request_contains_broker_tag() {
         120,
         3,
         None,
+        true,
+        2.0,
+        25.0,
     );
 
     let decision = serde_json::json!({

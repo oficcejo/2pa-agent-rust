@@ -46,11 +46,20 @@ pub struct SaveEnvRequest {
     pub okx_default_order_size: f64,
     #[serde(default = "default_leverage")]
     pub okx_default_leverage: f64,
+    #[serde(default = "default_true")]
+    pub okx_auto_order_sizing: bool,
+    #[serde(default = "default_risk_percent")]
+    pub okx_risk_percent: f64,
+    #[serde(default = "default_max_margin_percent")]
+    pub okx_max_margin_percent: f64,
     #[serde(default = "default_trade_mode")]
     pub okx_trade_mode: String,
     #[serde(default = "default_position_mode")]
     pub okx_position_mode: String,
 }
+
+fn default_risk_percent() -> f64 { 2.0 }
+fn default_max_margin_percent() -> f64 { 25.0 }
 
 fn default_llm_base_url() -> String { "https://api.deepseek.com".to_string() }
 fn default_llm_model() -> String { "deepseek-v4-flash".to_string() }
@@ -108,6 +117,9 @@ impl WebTradingService {
             settings.okx.max_signal_age_seconds,
             settings.okx.max_pending_bars,
             audit_path,
+            settings.okx.auto_order_sizing,
+            settings.okx.risk_percent,
+            settings.okx.max_margin_percent,
         );
 
         let orchestrator = TwoStageOrchestrator::new(
@@ -173,11 +185,19 @@ impl WebTradingService {
                     "id": "dog_walking",
                     "name": "🐕 遛狗系统 (SMA 14/170 均线回归)",
                     "description": "基于 14 狗绳与 170 主人均线偏离力学与均值回归"
+                },
+                {
+                    "id": "adaptive",
+                    "name": "🧠 智能自适应双引擎 (2PA + 遛狗)",
+                    "description": "震荡与通道顺势走 2PA，极值偏离衰竭走遛狗均线回归"
                 }
             ],
             "confidence_threshold": settings.general.decision_confidence_threshold,
             "default_order_size": settings.okx.default_order_size,
             "default_leverage": settings.okx.default_leverage,
+            "auto_order_sizing": settings.okx.auto_order_sizing,
+            "risk_percent": settings.okx.risk_percent,
+            "max_margin_percent": settings.okx.max_margin_percent,
             "trade_mode": settings.okx.trade_mode,
             "position_mode": settings.okx.position_mode,
             "block_new_entries_when_position_open": settings.okx.block_new_entries_when_position_open,
@@ -208,6 +228,9 @@ impl WebTradingService {
             "okx_demo_trading": settings.okx.demo_trading,
             "okx_default_order_size": settings.okx.default_order_size,
             "okx_default_leverage": settings.okx.default_leverage,
+            "okx_auto_order_sizing": settings.okx.auto_order_sizing,
+            "okx_risk_percent": settings.okx.risk_percent,
+            "okx_max_margin_percent": settings.okx.max_margin_percent,
             "okx_trade_mode": settings.okx.trade_mode,
             "okx_position_mode": settings.okx.position_mode,
         })
@@ -246,6 +269,9 @@ OKX_ENABLE_LIVE_TRADING=YES
 # ------------------------------ 订单与风控 ------------------------------
 OKX_DEFAULT_ORDER_SIZE={}
 OKX_DEFAULT_LEVERAGE={}
+OKX_AUTO_ORDER_SIZING={}
+OKX_RISK_PERCENT={}
+OKX_MAX_MARGIN_PERCENT={}
 OKX_TRADE_MODE={}
 OKX_POSITION_MODE={}
 OKX_BLOCK_NEW_ENTRIES_WHEN_POSITION_OPEN=true
@@ -269,6 +295,9 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             !req.okx_demo_trading,
             req.okx_default_order_size,
             req.okx_default_leverage,
+            req.okx_auto_order_sizing,
+            req.okx_risk_percent,
+            req.okx_max_margin_percent,
             req.okx_trade_mode.trim(),
             req.okx_position_mode.trim(),
         );
@@ -309,6 +338,9 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             new_settings.okx.max_signal_age_seconds,
             new_settings.okx.max_pending_bars,
             audit_path,
+            new_settings.okx.auto_order_sizing,
+            new_settings.okx.risk_percent,
+            new_settings.okx.max_margin_percent,
         );
 
         let new_orchestrator = TwoStageOrchestrator::new(
@@ -644,9 +676,45 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             }
         }
 
+        // 2. 获取高时间框架 (HTF) 宏观共振背景
+        let htf_tf = if timeframe == "1m" || timeframe == "3m" || timeframe == "5m" || timeframe == "15m" {
+            Some("1h")
+        } else if timeframe == "30m" || timeframe == "1h" {
+            Some("4h")
+        } else {
+            None
+        };
+
+        let mut htf_context_str = None;
+        if let Some(htf) = htf_tf {
+            if let Ok(htf_bars) = self.fetch_raw_candles(inst_id, htf, 40).await {
+                if let Some(htf_frame) = build_analysis_frame(&htf_bars, 20, inst_id, htf, None) {
+                    if let Some(latest) = htf_frame.bars.first() {
+                        let htf_close = latest.close;
+                        let htf_ema20 = htf_frame.indicators.ema20.first().copied().unwrap_or(0.0);
+                        let htf_sma170 = htf_frame.indicators.sma170.first().copied().unwrap_or(0.0);
+                        let htf_trend = if htf_ema20 > 0.0 {
+                            if htf_close > htf_ema20 { "偏多 (Bullish, 位于 HTF EMA20 之上)" } else { "偏空 (Bearish, 位于 HTF EMA20 之下)" }
+                        } else {
+                            "中性震荡"
+                        };
+                        htf_context_str = Some(format!(
+                            "- **HTF 周期**: {}\n\
+                             - **最新收盘价**: {:.4}\n\
+                             - **HTF EMA20**: {:.4}\n\
+                             - **HTF SMA170**: {:.4}\n\
+                             - **宏观格局偏向**: {}\n\
+                             - **共振交易指引**: 顺大做小。低级别入场信号若与 HTF 趋势共振（如 15m 多单 + 1H 偏多），期望值显著提高；若逆 HTF 趋势，必须严守短线与快速保本原则！",
+                            htf, htf_close, htf_ema20, htf_sma170, htf_trend
+                        ));
+                    }
+                }
+            }
+        }
+
         let record = {
             let orch = self.orchestrator.read().clone();
-            orch.run_analysis_with_system_and_pos(&frame, &system, Some(&pos_ctx)).await?
+            orch.run_analysis_with_system_and_pos(&frame, &system, Some(&pos_ctx), htf_context_str.as_deref()).await?
         };
 
         let mut execution_res = Value::Null;
@@ -780,12 +848,73 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
                             });
                         }
                     }
+                } else if order_type == "修改止盈" || action == "MOVE_TAKE_PROFIT" || action == "TRAILING_TAKE_PROFIT" {
+                    let new_tp = dec.get("new_take_profit_price").and_then(|v| v.as_f64())
+                        .or_else(|| dec.get("take_profit_price").and_then(|v| v.as_f64()));
+
+                    if let Some(n_tp) = new_tp {
+                        if pos_ctx.has_position {
+                            info!("Executing MOVE_TAKE_PROFIT for {} to {}...", inst_id, n_tp);
+                            let mut amend_success = false;
+                            if let Some(algo_id) = &pos_ctx.algo_id {
+                                if let Ok(res) = client.amend_algo_order(inst_id, algo_id, None, Some(n_tp)).await {
+                                    amend_success = true;
+                                    execution_res = serde_json::json!({
+                                        "submitted": true,
+                                        "action": "MOVE_TAKE_PROFIT",
+                                        "symbol": inst_id,
+                                        "new_take_profit": n_tp,
+                                        "reason": format!("已成功动态修改 OKX 止盈委托至 {}", n_tp),
+                                        "response": res
+                                    });
+                                }
+                            }
+                            if !amend_success {
+                                execution_res = serde_json::json!({
+                                    "submitted": false,
+                                    "action": "MOVE_TAKE_PROFIT",
+                                    "symbol": inst_id,
+                                    "reason": "未找到关联条件单或修改止盈失败"
+                                });
+                            }
+                        } else {
+                            execution_res = serde_json::json!({
+                                "submitted": false,
+                                "action": "MOVE_TAKE_PROFIT",
+                                "symbol": inst_id,
+                                "reason": "当前无持仓，无法移动止盈"
+                            });
+                        }
+                    }
+                } else if order_type == "修改止盈止损" || action == "MOVE_SL_TP" {
+                    let new_sl = dec.get("new_stop_loss_price").and_then(|v| v.as_f64())
+                        .or_else(|| dec.get("stop_loss_price").and_then(|v| v.as_f64()));
+                    let new_tp = dec.get("new_take_profit_price").and_then(|v| v.as_f64())
+                        .or_else(|| dec.get("take_profit_price").and_then(|v| v.as_f64()));
+
+                    if pos_ctx.has_position {
+                        if let Some(algo_id) = &pos_ctx.algo_id {
+                            if let Ok(res) = client.amend_algo_order(inst_id, algo_id, new_sl, new_tp).await {
+                                execution_res = serde_json::json!({
+                                    "submitted": true,
+                                    "action": "MOVE_SL_TP",
+                                    "symbol": inst_id,
+                                    "new_sl": new_sl,
+                                    "new_tp": new_tp,
+                                    "reason": "已成功同步更新 OKX 止损与止盈委托",
+                                    "response": res
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
 
         let system_name = if system == "dog_walking" {
             "🐕 遛狗系统 (SMA 14/170 均线回归)"
+        } else if system == "adaptive" {
+            "🧠 智能自适应双引擎 (2PA + 遛狗)"
         } else {
             "2PA 价格行为系统 (Al Brooks)"
         };

@@ -61,6 +61,7 @@
           <select id="tradingSystemSelect">
             <option value="2pa" selected>📊 2PA 价格行为</option>
             <option value="dog_walking">🐕 遛狗系统 (SMA 14/170)</option>
+            <option value="adaptive">🧠 智能自适应双引擎</option>
           </select>
         </label>
         <button id="refreshButton" class="icon-button" title="刷新行情" aria-label="刷新行情">↻</button>
@@ -448,6 +449,7 @@
               <select id="cfgTradingSystem">
                 <option value="2pa" selected>📊 2PA 价格行为系统 (Al Brooks 经典八态)</option>
                 <option value="dog_walking">🐕 遛狗系统 (SMA 14/170 均线偏离与回归)</option>
+                <option value="adaptive">🧠 智能自适应双引擎 (2PA + 遛狗综合自适应)</option>
               </select>
             </label>
           </div>
@@ -497,9 +499,21 @@
         </div>
 
         <div class="form-section">
-          <h3>🛡️ 默认下单与风控（参照首页合约换算查询计算下单量）</h3>
-          <div class="form-grid three-col">
-            <label>默认下单量
+          <h3>🛡️ 默认下单与风控设置</h3>
+          <div class="form-grid">
+            <label class="checkbox-label full-width">
+              <input id="cfgOkxAutoOrderSizing" type="checkbox" checked>
+              <span><strong>启用账户动态自适应算量</strong> (自动根据可用资金/合约面值换算安全张数，杜绝 51008 保证金不足拒单)</span>
+            </label>
+          </div>
+          <div class="form-grid three-col" style="margin-top: 10px;">
+            <label>单笔风险比例 (%)
+              <input id="cfgOkxRiskPercent" type="number" step="0.1" min="0.1" max="20" value="2.0">
+            </label>
+            <label>最大占用保证金比例 (%)
+              <input id="cfgOkxMaxMarginPercent" type="number" step="1" min="1" max="100" value="25.0">
+            </label>
+            <label>默认手动固定张数 (未启用自适应时生效)
               <input id="cfgOkxOrderSize" type="number" step="any" min="0.0001" value="1.0">
             </label>
             <label>默认杠杆

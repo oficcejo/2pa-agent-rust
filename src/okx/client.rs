@@ -49,11 +49,24 @@ impl OKXClient {
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         headers.insert(USER_AGENT, HeaderValue::from_static("PA-Agent-OKX-Rust/1.0"));
 
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_seconds.max(5)))
-            .default_headers(headers)
-            .build()
-            .unwrap_or_default();
+            .default_headers(headers);
+
+        if let Ok(proxy_url) = std::env::var("OKX_PROXY")
+            .or_else(|_| std::env::var("HTTPS_PROXY"))
+            .or_else(|_| std::env::var("HTTP_PROXY"))
+            .or_else(|_| std::env::var("ALL_PROXY"))
+            .or_else(|_| std::env::var("https_proxy"))
+            .or_else(|_| std::env::var("http_proxy"))
+            .or_else(|_| std::env::var("all_proxy"))
+        {
+            if let Ok(p) = reqwest::Proxy::all(&proxy_url) {
+                builder = builder.proxy(p);
+            }
+        }
+
+        let http = builder.build().unwrap_or_default();
 
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),

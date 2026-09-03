@@ -43,11 +43,11 @@ impl TwoStageOrchestrator {
 
     pub async fn run_analysis(&self, frame: &KlineFrame) -> Result<AnalysisRecord> {
         let system = self.settings.general.trading_system.clone();
-        self.run_analysis_with_system_and_pos(frame, &system, None).await
+        self.run_analysis_with_system_and_pos(frame, &system, None, None).await
     }
 
     pub async fn run_analysis_with_system(&self, frame: &KlineFrame, system: &str) -> Result<AnalysisRecord> {
-        self.run_analysis_with_system_and_pos(frame, system, None).await
+        self.run_analysis_with_system_and_pos(frame, system, None, None).await
     }
 
     pub async fn run_analysis_with_system_and_pos(
@@ -55,10 +55,11 @@ impl TwoStageOrchestrator {
         frame: &KlineFrame,
         system: &str,
         pos_ctx: Option<&PositionContext>,
+        htf_context: Option<&str>,
     ) -> Result<AnalysisRecord> {
         info!("Starting Stage 1 analysis for {} ({}) using system [{}]...", frame.symbol, frame.timeframe, system);
 
-        let stage1_prompt = build_stage1_prompt_for_system(system, frame, self.prompt_dir.as_deref());
+        let stage1_prompt = build_stage1_prompt_for_system(system, frame, self.prompt_dir.as_deref(), htf_context);
         let (stage1_diagnosis, stage1_reply, stage1_messages) = call_and_validate_stage1(
             &self.ai_client,
             &stage1_prompt,
@@ -76,6 +77,7 @@ impl TwoStageOrchestrator {
             self.prompt_dir.as_deref(),
             self.experience_dir.as_deref(),
             pos_ctx,
+            htf_context,
         );
 
         let (stage2_decision, stage2_reply, stage2_messages) = call_and_validate_stage2(

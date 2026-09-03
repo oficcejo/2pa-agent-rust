@@ -210,6 +210,20 @@ pub fn validate_stage2_json(val: &Value, raw_text: &str) -> Result<Value, Valida
             if new_sl.is_none() || new_sl.unwrap() <= 0.0 {
                 invalid.push("修改止损必须提供有效的 new_stop_loss_price 或 stop_loss_price".to_string());
             }
+        } else if order_type == "修改止盈" || action == "MOVE_TAKE_PROFIT" || action == "TRAILING_TAKE_PROFIT" {
+            let new_tp = d.get("new_take_profit_price").and_then(|v| v.as_f64())
+                .or_else(|| d.get("take_profit_price").and_then(|v| v.as_f64()));
+            if new_tp.is_none() || new_tp.unwrap() <= 0.0 {
+                invalid.push("修改止盈必须提供有效的 new_take_profit_price 或 take_profit_price".to_string());
+            }
+        } else if order_type == "修改止盈止损" || action == "MOVE_SL_TP" {
+            let new_sl = d.get("new_stop_loss_price").and_then(|v| v.as_f64())
+                .or_else(|| d.get("stop_loss_price").and_then(|v| v.as_f64()));
+            let new_tp = d.get("new_take_profit_price").and_then(|v| v.as_f64())
+                .or_else(|| d.get("take_profit_price").and_then(|v| v.as_f64()));
+            if (new_sl.is_none() || new_sl.unwrap() <= 0.0) && (new_tp.is_none() || new_tp.unwrap() <= 0.0) {
+                invalid.push("修改止盈止损至少需要提供有效的止损或止盈价格".to_string());
+            }
         } else if ["限价单", "突破单", "市价单"].contains(&order_type) {
             let entry = d.get("entry_price").and_then(|v| v.as_f64());
             let stop = d.get("stop_loss_price").and_then(|v| v.as_f64());

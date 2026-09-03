@@ -48,6 +48,8 @@ pub struct IndicatorBundle {
     #[serde(default)]
     pub sma170: Vec<f64>,
     #[serde(default)]
+    pub sma170_slope: Vec<f64>,
+    #[serde(default)]
     pub dev170_pct: Vec<f64>,
 }
 

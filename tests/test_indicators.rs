@@ -100,7 +100,7 @@ fn test_dog_walking_prompts() {
         snapshot_ts_local_ms: 10000,
     };
 
-    let p1 = build_stage1_prompt_for_system("dog_walking", &frame, None);
+    let p1 = build_stage1_prompt_for_system("dog_walking", &frame, None, None);
     assert!(p1.contains("遛狗系统"));
     assert!(p1.contains("SMA14"));
     assert!(p1.contains("SMA170"));
@@ -110,8 +110,51 @@ fn test_dog_walking_prompts() {
         "dominant_force": "bears",
         "gate_result": "proceed"
     });
-    let (p2, strat, _) = build_stage2_prompt_for_system("dog_walking", &frame, &diag, "balanced", false, None, None, None);
+    let (p2, strat, _) = build_stage2_prompt_for_system("dog_walking", &frame, &diag, "balanced", false, None, None, None, None);
     assert!(p2.contains("遛狗系统"));
+    assert_eq!(strat, vec!["遛狗系统_交易决策策略.txt"]);
+}
+
+#[test]
+fn test_adaptive_system_prompts() {
+    let mut bars = Vec::new();
+    for i in 1..=35 {
+        bars.push(KlineBar {
+            seq: i,
+            ts_open: (100000 - i * 60) as i64,
+            open: 65000.0 + (i as f64) * 10.0,
+            high: 65050.0 + (i as f64) * 10.0,
+            low: 64950.0 + (i as f64) * 10.0,
+            close: 65020.0 + (i as f64) * 10.0,
+            volume: 100.0,
+            amount: 0.0,
+            pct_chg: None,
+            closed: true,
+        });
+    }
+
+    let indicators = compute_indicators(&bars);
+    let frame = KlineFrame {
+        symbol: "BTC-USDT-SWAP".to_string(),
+        timeframe: "15m".to_string(),
+        bars,
+        indicators,
+        snapshot_ts_local_ms: 100000,
+    };
+
+    let htf_info = "HTF 1H: 偏多 (Bullish, 位于 1H EMA20 之上)";
+    let p1 = build_stage1_prompt_for_system("adaptive", &frame, None, Some(htf_info));
+    assert!(p1.contains("自适应"));
+    assert!(p1.contains("高时间框架"));
+
+    let diag = json!({
+        "recommended_subsystem": "dog_walking",
+        "cycle_position": "overstretched_bullish",
+        "dominant_force": "bears",
+        "gate_result": "proceed"
+    });
+    let (p2, strat, _) = build_stage2_prompt_for_system("adaptive", &frame, &diag, "aggressive", false, None, None, None, Some(htf_info));
+    assert!(p2.contains("自适应"));
     assert_eq!(strat, vec!["遛狗系统_交易决策策略.txt"]);
 }
 

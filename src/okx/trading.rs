@@ -72,6 +72,9 @@ pub struct OKXTradeExecutor {
     audit_path: Option<PathBuf>,
     seen: Arc<Mutex<HashSet<String>>>,
     audit_lock: Arc<ReentrantMutex<()>>,
+    pub auto_order_sizing: bool,
+    pub risk_percent: Decimal,
+    pub max_margin_percent: Decimal,
 }
 
 impl OKXTradeExecutor {
@@ -86,9 +89,14 @@ impl OKXTradeExecutor {
         max_signal_age_seconds: u64,
         max_pending_bars: usize,
         audit_path: Option<PathBuf>,
+        auto_order_sizing: bool,
+        risk_percent: f64,
+        max_margin_percent: f64,
     ) -> Self {
         let default_order_size = Decimal::from_f64_retain(default_order_size).unwrap_or(Decimal::ONE);
         let default_leverage = Decimal::from_f64_retain(default_leverage).unwrap_or(Decimal::from(3));
+        let risk_percent = Decimal::from_f64_retain(risk_percent).unwrap_or(Decimal::from(2));
+        let max_margin_percent = Decimal::from_f64_retain(max_margin_percent).unwrap_or(Decimal::from(25));
 
         let executor = Self {
             client,
@@ -103,6 +111,9 @@ impl OKXTradeExecutor {
             audit_path,
             seen: Arc::new(Mutex::new(HashSet::new())),
             audit_lock: Arc::new(ReentrantMutex::new(())),
+            auto_order_sizing,
+            risk_percent,
+            max_margin_percent,
         };
         executor.load_seen();
         executor
@@ -381,6 +392,148 @@ impl OKXTradeExecutor {
         (value / tick).round() * tick
     }
 
+    pub async fn compute_order_size(
+        &self,
+        inst_id: &str,
+        inst_type: &str,
+        entry: Decimal,
+        stop: Decimal,
+        lot_sz: Decimal,
+        min_sz: Decimal,
+        instrument: &Value,
+    ) -> Result<Decimal> {
+        let ct_val_str = instrument.get("ctVal").and_then(|v| v.as_str()).unwrap_or("1");
+        let ct_val = Decimal::from_str(ct_val_str).unwrap_or(Decimal::ONE);
+        let ct_type = instrument.get("ctType").and_then(|v| v.as_str()).unwrap_or("linear");
+
+        // 1. 单单位名义价值 (USDT)
+        let unit_notional_usd = if inst_type == "SWAP" {
+            if ct_type == "inverse" {
+                ct_val
+            } else {
+                ct_val * entry
+            }
+        } else {
+            entry
+        };
+
+        if unit_notional_usd <= Decimal::ZERO {
+            return Ok(Self::floor_step(self.default_order_size, lot_sz).max(min_sz));
+        }
+
+        // 2. 从 OKX 查询账户权益与可用保证金
+        let mut avail_eq = Decimal::ZERO;
+        let mut total_eq = Decimal::ZERO;
+
+        if let Ok(balance_list) = self.client.get_account_balance().await {
+            if let Some(first) = balance_list.first() {
+                if let Some(te) = first.get("totalEq").and_then(|v| v.as_str()).and_then(|s| Decimal::from_str(s).ok()) {
+                    total_eq = te;
+                }
+                if let Some(details) = first.get("details").and_then(|v| v.as_array()) {
+                    for d in details {
+                        let ccy = d.get("ccy").and_then(|v| v.as_str()).unwrap_or("");
+                        if ccy.eq_ignore_ascii_case("USDT") || ccy.eq_ignore_ascii_case("USD") {
+                            if let Some(ae) = d.get("availEq").or_else(|| d.get("availBal")).and_then(|v| v.as_str()).and_then(|s| Decimal::from_str(s).ok()) {
+                                if ae > avail_eq {
+                                    avail_eq = ae;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 若无法获取余额，降级为使用 default_order_size
+        if avail_eq <= Decimal::ZERO && total_eq <= Decimal::ZERO {
+            let size = Self::floor_step(self.default_order_size, lot_sz);
+            if size < min_sz {
+                return Err(anyhow!("下单数量 {} 低于交易所最小下单量 {}", size, min_sz));
+            }
+            return Ok(size);
+        }
+
+        let effective_avail = if avail_eq > Decimal::ZERO { avail_eq } else { total_eq };
+        let effective_total = if total_eq > Decimal::ZERO { total_eq } else { effective_avail };
+
+        // 3. 计算单张/单币所需保证金
+        let lev = if self.default_leverage > Decimal::ZERO { self.default_leverage } else { Decimal::from(3) };
+        let margin_per_unit = unit_notional_usd / lev;
+
+        // 4. 按保证金上限计算最大可用张数 (max_margin_percent, 默认25%)
+        let margin_cap_percent = self.max_margin_percent.clamp(Decimal::ONE, Decimal::from(100)) / Decimal::from(100);
+        let max_usable_margin = effective_avail * margin_cap_percent;
+        let max_units_by_margin = if margin_per_unit > Decimal::ZERO {
+            max_usable_margin / margin_per_unit
+        } else {
+            Decimal::ZERO
+        };
+
+        // 5. 按单笔风险比例计算张数 (risk_percent, 默认2%)
+        let risk_cap_percent = self.risk_percent.clamp(Decimal::new(1, 1), Decimal::from(20)) / Decimal::from(100);
+        let allowed_risk_usd = effective_total * risk_cap_percent;
+
+        let stop_dist = (entry - stop).abs();
+        let risk_per_unit = if inst_type == "SWAP" {
+            if ct_type == "inverse" {
+                if entry > Decimal::ZERO { (stop_dist / entry) * ct_val } else { ct_val }
+            } else {
+                stop_dist * ct_val
+            }
+        } else {
+            stop_dist
+        };
+
+        let units_by_risk = if risk_per_unit > Decimal::ZERO {
+            allowed_risk_usd / risk_per_unit
+        } else {
+            max_units_by_margin
+        };
+
+        // 6. 确定目标张数
+        let target = if self.auto_order_sizing {
+            let mut sz = units_by_risk.min(max_units_by_margin);
+            if sz < min_sz && max_units_by_margin >= min_sz {
+                sz = min_sz;
+            }
+            sz
+        } else {
+            let user_sz = self.default_order_size;
+            if user_sz > max_units_by_margin && max_units_by_margin >= min_sz {
+                tracing::warn!(
+                    "用户设定的默认下单量 {} 超出安全保证金承载上限 {:.4} (标的: {})，自动裁剪以防止 OKX 51008 拒单。",
+                    user_sz, max_units_by_margin, inst_id
+                );
+                max_units_by_margin
+            } else {
+                user_sz
+            }
+        };
+
+        let size = Self::floor_step(target, lot_sz);
+
+        // 7. 严格校验最小下单门槛
+        if size < min_sz {
+            let min_margin_needed = min_sz * margin_per_unit;
+            if effective_avail < min_margin_needed {
+                return Err(anyhow!(
+                    "账户可用保证金 ({:.2} USDT) 不足以开立最小下单量 {} 张 (单张价值约 {:.2} USDT, 最小需 {:.2} USDT 保证金，杠杆 {}x)。请充值或选择面值更小的品种。",
+                    effective_avail, min_sz, unit_notional_usd, min_margin_needed, lev
+                ));
+            } else {
+                return Ok(min_sz);
+            }
+        }
+
+        tracing::info!(
+            "动态算量完成: 标的={}, 最终张数={}, 单张名义价值={:.2} USDT, 所需保证金={:.2} USDT, 账户可用={:.2} USDT",
+            inst_id, size, unit_notional_usd, size * margin_per_unit, effective_avail
+        );
+
+        Ok(size)
+    }
+
     pub async fn build_request(
         &self,
         inst_id: &str,
@@ -419,10 +572,7 @@ impl OKXTradeExecutor {
         let lot_sz = Decimal::from_str(lot_sz_str).unwrap_or(Decimal::new(1, 8));
         let min_sz = Decimal::from_str(min_sz_str).unwrap_or(lot_sz);
 
-        let size = Self::floor_step(self.default_order_size, lot_sz);
-        if size < min_sz {
-            return Err(anyhow!("下单数量 {} 低于交易所最小下单量 {}", size, min_sz));
-        }
+        let size = self.compute_order_size(inst_id, inst_type, entry, stop, lot_sz, min_sz, &instrument).await?;
 
         let direction = decision.get("order_direction").and_then(|v| v.as_str()).unwrap_or("");
         let side = if direction == "做多" { "buy" } else { "sell" };

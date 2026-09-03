@@ -57,11 +57,24 @@ impl AIClient {
             }
         }
 
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_seconds.max(10)))
-            .default_headers(headers)
-            .build()
-            .unwrap_or_default();
+            .default_headers(headers);
+
+        if let Ok(proxy_url) = std::env::var("LLM_PROXY")
+            .or_else(|_| std::env::var("HTTPS_PROXY"))
+            .or_else(|_| std::env::var("HTTP_PROXY"))
+            .or_else(|_| std::env::var("ALL_PROXY"))
+            .or_else(|_| std::env::var("https_proxy"))
+            .or_else(|_| std::env::var("http_proxy"))
+            .or_else(|_| std::env::var("all_proxy"))
+        {
+            if let Ok(p) = reqwest::Proxy::all(&proxy_url) {
+                builder = builder.proxy(p);
+            }
+        }
+
+        let http = builder.build().unwrap_or_default();
 
         Self {
             model: model.trim().to_string(),

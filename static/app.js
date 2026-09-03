@@ -215,9 +215,25 @@ function renderAutomationStatus(state, forceSessionControls = false) {
     const sys = state.trading_system || currentTradingSystem;
     autoSystem.innerHTML = sys === "dog_walking"
       ? `<span style="color:var(--amber);font-weight:700">🐕 遛狗系统 (SMA 14/170)</span>`
-      : `<span style="color:var(--green);font-weight:700">2PA 价格行为</span>`;
+      : (sys === "adaptive"
+          ? `<span style="color:#a855f7;font-weight:700">🧠 智能自适应双引擎</span>`
+          : `<span style="color:var(--green);font-weight:700">2PA 价格行为</span>`);
   }
   renderAutomationSession(state, forceSessionControls);
+}
+
+function updateSystemUI() {
+  if ($("tradingSystemSelect")) {
+    $("tradingSystemSelect").value = currentTradingSystem || "2pa";
+  }
+  const autoSystem = $("autoSystem");
+  if (autoSystem) {
+    autoSystem.innerHTML = currentTradingSystem === "dog_walking"
+      ? `<span style="color:var(--amber);font-weight:700">🐕 遛狗系统 (SMA 14/170)</span>`
+      : (currentTradingSystem === "adaptive"
+          ? `<span style="color:#a855f7;font-weight:700">🧠 智能自适应双引擎</span>`
+          : `<span style="color:var(--green);font-weight:700">2PA 价格行为</span>`);
+  }
 }
 
 async function loadStatus() {
@@ -244,9 +260,15 @@ async function loadStatus() {
   }
   const riskConfidence = $("riskConfidence");
   if (riskConfidence) riskConfidence.textContent = `${statusData.confidence_threshold}%`;
-  const orderSizeUnit = isSwap ? "contracts (张)" : "base units (个)";
+  const orderSizeUnit = isSwap ? "张" : "个";
   const orderSize = $("orderSize");
-  if (orderSize) orderSize.textContent = `${statusData.default_order_size} ${orderSizeUnit}`;
+  if (orderSize) {
+    if (statusData.auto_order_sizing) {
+      orderSize.innerHTML = `<span style="color:var(--green);font-weight:700">动态自适应算量</span> <small>(风控 ${statusData.risk_percent || 2}% / 顶格 ${statusData.max_margin_percent || 25}%)</small>`;
+    } else {
+      orderSize.textContent = `${statusData.default_order_size} ${orderSizeUnit}`;
+    }
+  }
   const tradeMode = $("tradeMode");
   if (tradeMode) tradeMode.textContent = `${statusData.trade_mode} / ${statusData.position_mode} / ${fmt(statusData.default_leverage, 2)}x`;
   const confirmation = $("confirmation");
@@ -1283,6 +1305,9 @@ async function openConfigModal() {
     if ($("cfgTradingSystem")) $("cfgTradingSystem").value = cfg.trading_system || currentTradingSystem || "2pa";
     if (cfg.okx_base_url) $("cfgOkxBaseUrl").value = cfg.okx_base_url;
     $("cfgOkxDemoTrading").value = String(cfg.okx_demo_trading !== false);
+    if ($("cfgOkxAutoOrderSizing")) $("cfgOkxAutoOrderSizing").checked = cfg.okx_auto_order_sizing !== false;
+    if ($("cfgOkxRiskPercent")) $("cfgOkxRiskPercent").value = cfg.okx_risk_percent || 2.0;
+    if ($("cfgOkxMaxMarginPercent")) $("cfgOkxMaxMarginPercent").value = cfg.okx_max_margin_percent || 25.0;
     if (cfg.okx_default_order_size) $("cfgOkxOrderSize").value = cfg.okx_default_order_size;
     if (cfg.okx_default_leverage) $("cfgOkxLeverage").value = cfg.okx_default_leverage;
     if (cfg.okx_trade_mode) $("cfgOkxTradeMode").value = cfg.okx_trade_mode;
@@ -1312,6 +1337,9 @@ async function handleSaveConfig(event) {
       okx_passphrase: $("cfgOkxPassphrase").value.trim(),
       okx_base_url: "https://www.okx.com",
       okx_demo_trading: $("cfgOkxDemoTrading").value === "true",
+      okx_auto_order_sizing: $("cfgOkxAutoOrderSizing") ? $("cfgOkxAutoOrderSizing").checked : true,
+      okx_risk_percent: $("cfgOkxRiskPercent") ? Number($("cfgOkxRiskPercent").value) : 2.0,
+      okx_max_margin_percent: $("cfgOkxMaxMarginPercent") ? Number($("cfgOkxMaxMarginPercent").value) : 25.0,
       okx_default_order_size: Number($("cfgOkxOrderSize").value) || 1.0,
       okx_default_leverage: Number($("cfgOkxLeverage").value) || 3.0,
       okx_trade_mode: $("cfgOkxTradeMode").value,

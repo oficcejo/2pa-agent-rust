@@ -131,6 +131,13 @@
 - **操作规范**：
   - 输出 `action: "HOLD"`, `order_type: "持有"`，保持当前仓位与止损不动，让利润奔跑。
 
+#### 4. 动态追踪移动止盈（Moving Take Profit - SMA 170 动态位移）
+- **触发场景**：
+  - 随着时间推移产生新的 K 线，SMA 170 主人均线价格发生了明显移动（与原止盈单价格偏差超过 0.5 ATR）；
+- **操作规范**：
+  - 输出 `action: "MOVE_TAKE_PROFIT"`, `order_type: "修改止盈"`；
+  - 设置 `new_take_profit_price` 为最新收盘时计算的 **SMA 170 实时价格**，系统将自动向交易所下达改单指令，实现完美的动态追踪止盈！
+
 ---
 
 ## 四、阶段二 JSON 输出格式规范
@@ -139,13 +146,14 @@
 {
   "trading_system": "dog_walking",
   "decision": {
-    "action": "OPEN" | "HOLD" | "MOVE_STOP_LOSS" | "CLOSE_EARLY" | "WAIT",
-    "order_type": "市价单" | "限价单" | "突破单" | "修改止损" | "平仓" | "持有" | "不下单",
+    "action": "OPEN" | "HOLD" | "MOVE_STOP_LOSS" | "MOVE_TAKE_PROFIT" | "CLOSE_EARLY" | "WAIT",
+    "order_type": "市价单" | "限价单" | "突破单" | "修改止损" | "修改止盈" | "平仓" | "持有" | "不下单",
     "order_direction": "做多" | "做空" | null,
     "entry_price": 1965.2,
     "stop_loss_price": 1988.0,
     "new_stop_loss_price": 1960.0,
     "take_profit_price": 1916.5,
+    "new_take_profit_price": 1922.0,
     "take_profit_price_2": 1940.0,
     "trade_confidence": 85,
     "estimated_win_rate": 70,

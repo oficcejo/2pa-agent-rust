@@ -171,6 +171,12 @@ pub struct OKXSettings {
     #[serde(default = "default_position_mode")]
     pub position_mode: String,
     #[serde(default = "default_true")]
+    pub auto_order_sizing: bool,
+    #[serde(default = "default_risk_percent")]
+    pub risk_percent: f64,
+    #[serde(default = "default_max_margin_percent")]
+    pub max_margin_percent: f64,
+    #[serde(default = "default_true")]
     pub block_new_entries_when_position_open: bool,
     #[serde(default = "default_max_signal_age")]
     pub max_signal_age_seconds: u64,
@@ -195,6 +201,8 @@ fn default_order_size() -> f64 { 1.0 }
 fn default_leverage() -> f64 { 3.0 }
 fn default_trade_mode() -> String { "cross".to_string() }
 fn default_position_mode() -> String { "net".to_string() }
+fn default_risk_percent() -> f64 { 2.0 }
+fn default_max_margin_percent() -> f64 { 25.0 }
 fn default_max_signal_age() -> u64 { 120 }
 fn default_max_pending_bars() -> usize { 3 }
 fn default_automation_poll() -> u64 { 20 }
@@ -218,6 +226,9 @@ impl Default for OKXSettings {
             default_leverage: default_leverage(),
             trade_mode: default_trade_mode(),
             position_mode: default_position_mode(),
+            auto_order_sizing: true,
+            risk_percent: default_risk_percent(),
+            max_margin_percent: default_max_margin_percent(),
             block_new_entries_when_position_open: true,
             max_signal_age_seconds: default_max_signal_age(),
             max_pending_bars: default_max_pending_bars(),
@@ -307,6 +318,15 @@ impl Settings {
         }
         if let Ok(v) = std::env::var("OKX_DEFAULT_ORDER_SIZE") {
             if let Ok(num) = v.trim().parse::<f64>() { settings.okx.default_order_size = num; }
+        }
+        if let Ok(v) = std::env::var("OKX_AUTO_ORDER_SIZING") {
+            settings.okx.auto_order_sizing = v.trim().eq_ignore_ascii_case("true") || v.trim() == "1";
+        }
+        if let Ok(v) = std::env::var("OKX_RISK_PERCENT") {
+            if let Ok(num) = v.trim().parse::<f64>() { settings.okx.risk_percent = num.clamp(0.1, 20.0); }
+        }
+        if let Ok(v) = std::env::var("OKX_MAX_MARGIN_PERCENT") {
+            if let Ok(num) = v.trim().parse::<f64>() { settings.okx.max_margin_percent = num.clamp(1.0, 100.0); }
         }
         if let Ok(v) = std::env::var("OKX_DEFAULT_LEVERAGE") {
             if let Ok(num) = v.trim().parse::<f64>() { settings.okx.default_leverage = num; }
