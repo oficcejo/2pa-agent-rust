@@ -84,6 +84,7 @@ pub struct WebTradingService {
     pub latest_analysis: Arc<RwLock<Option<Value>>>,
     pub last_closed_ts: Arc<RwLock<HashMap<(String, String), i64>>>,
     pub equity_history: Arc<RwLock<Vec<Value>>>,
+    pub operation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl WebTradingService {
@@ -150,6 +151,7 @@ impl WebTradingService {
             latest_analysis: Arc::new(RwLock::new(None)),
             last_closed_ts: Arc::new(RwLock::new(HashMap::new())),
             equity_history: Arc::new(RwLock::new(Vec::new())),
+            operation_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -170,26 +172,32 @@ impl WebTradingService {
             "credentials_configured": settings.is_okx_configured(),
             "auto_trading_enabled": auto_enabled,
             "live_execution_unlocked": settings.okx.demo_trading || settings.okx.live_trading_acknowledged,
-            "can_execute": auto_enabled && settings.is_okx_configured(),
+            "can_execute": auto_enabled && settings.is_okx_configured() && (settings.okx.demo_trading || settings.okx.live_trading_acknowledged),
             "broker_tag": BROKER_TAG,
             "symbol": symbol,
             "timeframe": timeframe,
             "trading_system": trading_system,
             "available_trading_systems": [
                 {
-                    "id": "2pa",
+                    "id": "2pa_trend",
                     "name": "2PA 价格行为系统 (Al Brooks)",
-                    "description": "基于经典价格行为学八态周期、EMA20 与二元决策树"
+                    "description": "已确认二次入场或突破回踩，须高周期同向"
                 },
                 {
-                    "id": "dog_walking",
+                    "id": "dog_reversion",
                     "name": "🐕 遛狗系统 (SMA 14/170 均线回归)",
                     "description": "基于 14 狗绳与 170 主人均线偏离力学与均值回归"
                 },
+                {"id":"dog_trend", "name":"遛狗顺势回踩", "description":"SMA170 斜率与回踩确认，高周期同向"},
                 {
                     "id": "adaptive",
-                    "name": "🧠 智能自适应双引擎 (2PA + 遛狗)",
-                    "description": "震荡与通道顺势走 2PA，极值偏离衰竭走遛狗均线回归"
+                    "name": "🧠 自适应观察模式（不开新仓）",
+                    "description": "仅观察，待三个独立策略积累成交验证后再评估切换"
+                },
+                {
+                    "id": "alpha_pilot",
+                    "name": "⚡ AlphaPilot 量化因子系统",
+                    "description": "基于 Rogers-Satchell 波动率跳跃与 SuperTrend 突破的纯数学量化 Alpha，0 Token 延迟"
                 }
             ],
             "confidence_threshold": settings.general.decision_confidence_threshold,
@@ -237,6 +245,18 @@ impl WebTradingService {
     }
 
     pub fn save_env_config(&self, req: &SaveEnvRequest) -> Result<Value> {
+        let _guard = self.operation_lock.try_lock().map_err(|_| anyhow!("交易处理中，请稍后保存配置"))?;
+        for field in [&req.llm_api_key, &req.llm_base_url, &req.llm_model, &req.trading_system,
+            &req.okx_api_key, &req.okx_secret_key, &req.okx_passphrase, &req.okx_base_url,
+            &req.okx_trade_mode, &req.okx_position_mode] {
+            anyhow::ensure!(!field.contains(['\r','\n','\0']), "配置字段不得包含换行");
+        }
+        anyhow::ensure!(crate::strategies::canonical(&req.trading_system).is_some(), "未知交易系统");
+        anyhow::ensure!(["net","long_short"].contains(&req.okx_position_mode.as_str()), "未知持仓模式");
+        anyhow::ensure!(["cash","cross","isolated"].contains(&req.okx_trade_mode.as_str()), "未知保证金模式");
+        anyhow::ensure!(req.okx_default_order_size.is_finite() && req.okx_default_order_size > 0.0
+            && req.okx_default_leverage.is_finite() && req.okx_default_leverage >= 1.0
+            && (0.1..=20.0).contains(&req.okx_risk_percent) && (1.0..=100.0).contains(&req.okx_max_margin_percent), "无效的仓位或风险参数");
         let content = format!(
             r#"# =============================================================================
 # OKX 2PA Agent 运行时环境变量配置文件 (由系统向导自动生成)
@@ -292,7 +312,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             req.okx_passphrase.trim(),
             req.okx_base_url.trim(),
             req.okx_demo_trading,
-            !req.okx_demo_trading,
+            self.settings.read().okx.live_trading_acknowledged,
             req.okx_default_order_size,
             req.okx_default_leverage,
             req.okx_auto_order_sizing,
@@ -302,12 +322,36 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             req.okx_position_mode.trim(),
         );
 
+        let token = self.settings.read().web_auth_token.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$");
+        let content = format!("{}\nWEB_AUTH_TOKEN=\"{}\"\n", content, token);
         std::fs::write(".env", content)?;
         info!("Successfully saved configuration to .env");
 
         // Reload new settings in-memory
         let config_path = settings_json_path();
-        let new_settings = Settings::load_from_file_and_env(&config_path);
+        let mut new_settings = Settings::load_from_file_and_env(&config_path);
+        new_settings.web_auth_token = self.settings.read().web_auth_token.clone();
+        // Apply this request directly; dotenv does not overwrite existing process variables.
+        new_settings.provider.api_key = req.llm_api_key.trim().into();
+        new_settings.provider.base_url = req.llm_base_url.trim().into();
+        new_settings.provider.model = req.llm_model.trim().into();
+        new_settings.provider.thinking = req.llm_thinking;
+        new_settings.general.trading_system = req.trading_system.trim().into();
+        new_settings.okx.api_key = req.okx_api_key.trim().into();
+        new_settings.okx.secret_key = req.okx_secret_key.trim().into();
+        new_settings.okx.passphrase = req.okx_passphrase.trim().into();
+        new_settings.okx.base_url = req.okx_base_url.trim().into();
+        new_settings.okx.demo_trading = req.okx_demo_trading;
+        new_settings.okx.live_trading_acknowledged = self.settings.read().okx.live_trading_acknowledged;
+        new_settings.okx.default_order_size = req.okx_default_order_size;
+        new_settings.okx.default_leverage = req.okx_default_leverage;
+        new_settings.okx.auto_order_sizing = req.okx_auto_order_sizing;
+        new_settings.okx.risk_percent = req.okx_risk_percent;
+        new_settings.okx.max_margin_percent = req.okx_max_margin_percent;
+        new_settings.okx.trade_mode = req.okx_trade_mode.trim().into();
+        new_settings.okx.position_mode = req.okx_position_mode.trim().into();
+        new_settings.okx.auto_trading_enabled = false;
+        *self.automation_enabled.write() = false;
 
         let creds = if new_settings.is_okx_configured() {
             Some(OKXCredentials::new(
@@ -371,6 +415,9 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         trading_system: Option<&str>,
     ) -> Result<Value> {
         let settings = self.settings.read();
+        if enabled {
+            anyhow::ensure!(settings.okx.demo_trading || settings.okx.live_trading_acknowledged, "实盘执行未授权，请在服务器设置 OKX_LIVE_TRADING_ACKNOWLEDGED=true");
+        }
         if enabled && !*self.automation_enabled.read() {
             let required = if settings.okx.demo_trading { "ENABLE DEMO" } else { "ENABLE LIVE" };
             if confirmation.trim().to_uppercase() != required {
@@ -381,6 +428,12 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             }
         }
 
+        if enabled && session_preset == Some("custom") {
+            if let Some(tz) = session_timezone { anyhow::ensure!(tz.parse::<chrono_tz::Tz>().is_ok(), "无效时区"); }
+            for time in [session_start, session_end].into_iter().flatten() {
+                anyhow::ensure!(chrono::NaiveTime::parse_from_str(time, "%H:%M").is_ok(), "无效交易时段");
+            }
+        }
         let cur_session = self.automation_session.read().clone();
         let session = build_trading_session(
             session_preset.unwrap_or(&cur_session.preset),
@@ -392,7 +445,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
 
         if let Some(sys) = trading_system {
             if !sys.trim().is_empty() {
-                *self.current_trading_system.write() = sys.trim().to_string();
+                *self.current_trading_system.write() = crate::strategies::canonical(sys).ok_or_else(|| anyhow!("未知交易系统"))?.to_string();
             }
         }
 
@@ -407,7 +460,11 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
 
     pub async fn fetch_raw_candles(&self, inst_id: &str, timeframe: &str, limit: usize) -> Result<Vec<KlineBar>> {
         let client = self.okx_client.read().clone();
-        let raw_rows = client.get_candles(inst_id, timeframe, limit).await?;
+        let raw_rows = if limit > 300 {
+            client.get_candles_paginated(inst_id, timeframe, limit, false).await?
+        } else {
+            client.get_candles(inst_id, timeframe, limit).await?
+        };
         let mut bars = Vec::with_capacity(raw_rows.len());
 
         for (i, row) in raw_rows.iter().enumerate() {
@@ -464,12 +521,17 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         }
 
         let client = self.okx_client.read().clone();
-        let balance_rows = client.get_account_balance().await.unwrap_or_default();
-        let position_rows = client.get_positions(None).await.unwrap_or_default();
-        let mut pending_orders = client.get_pending_orders(None).await.unwrap_or_default();
+        let balance_rows = client.get_account_balance().await?;
+        let raw_positions = client.get_positions(None).await?;
+        let mut position_rows = Vec::new();
+        for p in raw_positions {
+            let size = crate::web::positions::number(&p,"pos").ok_or_else(|| anyhow!("持仓数量无效"))?;
+            if size != 0.0 { position_rows.push(crate::web::positions::normalize_position(&p)?); }
+        }
+        let mut pending_orders = client.get_pending_orders(None).await?;
 
-        if let Ok(algos) = client.get_pending_algo_orders(None, "trigger").await {
-            pending_orders.extend(algos);
+        for kind in ["trigger", "conditional", "oco"] {
+            pending_orders.extend(client.get_pending_algo_orders(None, kind).await?);
         }
 
         let total_equity = balance_rows.first()
@@ -479,12 +541,29 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             .unwrap_or(0.0);
 
         let upl = position_rows.iter()
-            .filter_map(|p| p.get("upl").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()))
+            .filter_map(|p| p.get("unrealized_pnl").and_then(Value::as_f64))
             .sum::<f64>();
 
+        let available = balance_rows.first().and_then(|r| r["details"].as_array())
+            .and_then(|rows| rows.iter().find(|r| r["ccy"] == "USDT"))
+            .and_then(|r| crate::web::positions::number(r,"availEq").or_else(|| crate::web::positions::number(r,"availBal")));
+        let updated_at = Utc::now().timestamp_millis();
+        let equity_curve = {
+            let mut history = self.equity_history.write();
+            if history.last().and_then(|p| p["ts"].as_i64()).map(|t| updated_at - t >= 60_000).unwrap_or(true) {
+                history.push(serde_json::json!({"ts": updated_at, "value":total_equity}));
+                if history.len() > 1440 { history.remove(0); }
+            }
+            history.clone()
+        };
+        let balances: Vec<Value> = balance_rows.iter().filter_map(|r| r["details"].as_array()).flatten()
+            .map(|r| serde_json::json!({"currency":r["ccy"], "equity":crate::web::positions::number(r,"eq"),
+                "available":crate::web::positions::number(r,"availEq").or_else(|| crate::web::positions::number(r,"availBal")),
+                "frozen":crate::web::positions::number(r,"frozenBal")})).collect();
         let summary = serde_json::json!({
+            "updated_at_ms": updated_at,
             "total_equity_usd": total_equity,
-            "available_equity_usd": total_equity,
+            "available_equity_usd": available,
             "unrealized_pnl": upl,
             "position_count": position_rows.len(),
             "pending_order_count": pending_orders.len(),
@@ -493,7 +572,9 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         Ok(serde_json::json!({
             "configured": true,
             "summary": summary,
-            "balances": balance_rows,
+            "balances": balances,
+            "equity_curve": equity_curve,
+            "equity_curve_scope": "current_process_observations",
             "positions": position_rows,
             "orders": pending_orders,
         }))
@@ -506,6 +587,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         cl_ord_id: Option<&str>,
         algo_id: Option<&str>,
     ) -> Result<Value> {
+        let _guard = self.operation_lock.lock().await;
         let client = self.okx_client.read().clone();
         if let Some(aid) = algo_id {
             if !aid.is_empty() {
@@ -516,6 +598,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
     }
 
     pub async fn cancel_all_orders(&self, inst_id: Option<&str>) -> Result<usize> {
+        let _guard = self.operation_lock.lock().await;
         let client = self.okx_client.read().clone();
         let regular_orders = client.get_pending_orders(inst_id).await.unwrap_or_default();
         let algo_orders = client.get_pending_algo_orders(inst_id, "trigger").await.unwrap_or_default();
@@ -613,68 +696,43 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         execute: bool,
         system_override: Option<&str>,
     ) -> Result<Value> {
+        let _operation_guard = self.operation_lock.lock().await;
+        if execute { self.ensure_execution_enabled()?; }
+        anyhow::ensure!((20..=800).contains(&bar_count), "分析 K 线数量必须在 20 至 800 之间");
         let system = match system_override {
             Some(s) if !s.trim().is_empty() => {
-                let s_clean = s.trim().to_string();
+                let s_clean = crate::strategies::canonical(s).ok_or_else(|| anyhow!("未知交易系统"))?.to_string();
                 *self.current_trading_system.write() = s_clean.clone();
                 s_clean
             }
             _ => self.current_trading_system.read().clone(),
         };
 
-        let fetch_limit = (bar_count + INDICATOR_WARMUP_BARS + 20).min(300).max(100);
+        let system = crate::strategies::canonical(&system).ok_or_else(|| anyhow!("未知交易系统"))?.to_string();
+        let is_alpha = system == "alpha_pilot";
+        let is_adaptive = system.eq_ignore_ascii_case("adaptive") || system.contains("自适应");
+
+        let fetch_limit = if is_alpha || is_adaptive {
+            800.max(bar_count + INDICATOR_WARMUP_BARS + 20)
+        } else {
+            (bar_count + INDICATOR_WARMUP_BARS + 20).max(100)
+        };
         let raw_bars = self.fetch_raw_candles(inst_id, timeframe, fetch_limit).await?;
-        let frame = build_analysis_frame(&raw_bars, bar_count, inst_id, timeframe, None)
-            .ok_or_else(|| anyhow!("not enough closed OKX candles to build {}-bar analysis", bar_count))?;
+        let frame_bars = if is_alpha {
+            raw_bars.len().saturating_sub(1).min(800).max(bar_count)
+        } else {
+            bar_count
+        };
+        let frame = build_analysis_frame(&raw_bars, frame_bars, inst_id, timeframe, None)
+            .ok_or_else(|| anyhow!("not enough closed OKX candles to build {}-bar analysis", frame_bars))?;
 
         let client = self.okx_client.read().clone();
 
-        // 1. 实时获取 OKX 当前品种的活跃持仓状态与生效中的止盈止损
-        let mut pos_ctx = PositionContext {
-            has_position: false,
-            symbol: inst_id.to_string(),
-            pos_side: "none".to_string(),
-            pos_size: "0".to_string(),
-            mgn_mode: "cross".to_string(),
-            ..Default::default()
-        };
-
-        if let Ok(positions) = client.get_positions(Some(inst_id)).await {
-            for p in positions {
-                let sz_str = p.get("pos").and_then(|v| v.as_str()).unwrap_or("0");
-                if let Ok(sz) = sz_str.parse::<f64>() {
-                    if sz.abs() > 1e-6 {
-                        pos_ctx.has_position = true;
-                        pos_ctx.pos_side = if sz > 0.0 { "long".to_string() } else { "short".to_string() };
-                        pos_ctx.pos_size = sz.abs().to_string();
-                        pos_ctx.open_avg_px = p.get("avgPx").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
-                        pos_ctx.mark_px = p.get("markPx").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
-                        pos_ctx.unrealized_pnl = p.get("upl").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
-                        pos_ctx.unrealized_pnl_ratio = p.get("uplRatio").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).map(|r: f64| r * 100.0);
-                        pos_ctx.leverage = p.get("lever").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
-                        pos_ctx.mgn_mode = p.get("mgnMode").and_then(|v| v.as_str()).unwrap_or("cross").to_string();
-                        pos_ctx.open_time_ms = p.get("cTime").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
-                        break;
-                    }
-                }
-            }
-        }
-
-        if pos_ctx.has_position {
-            if let Ok(algos) = client.get_pending_algo_orders(Some(inst_id), "conditional").await {
-                for a in algos {
-                    if let Some(sl) = a.get("slTriggerPx").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()) {
-                        pos_ctx.current_sl = Some(sl);
-                    }
-                    if let Some(tp) = a.get("tpTriggerPx").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()) {
-                        pos_ctx.current_tp = Some(tp);
-                    }
-                    if let Some(aid) = a.get("algoId").and_then(|v| v.as_str()) {
-                        pos_ctx.algo_id = Some(aid.to_string());
-                    }
-                }
-            }
-        }
+        let position_mode = self.settings.read().okx.position_mode.clone();
+        let configured = self.settings.read().is_okx_configured();
+        let pos_ctx = if configured {
+            crate::web::positions::read_position(&client, inst_id, &position_mode).await?
+        } else { PositionContext { symbol: inst_id.into(), pos_side: "none".into(), pos_size: "0".into(), ..Default::default() } };
 
         // 2. 获取高时间框架 (HTF) 宏观共振背景
         let htf_tf = if timeframe == "1m" || timeframe == "3m" || timeframe == "5m" || timeframe == "15m" {
@@ -686,9 +744,11 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         };
 
         let mut htf_context_str = None;
+        let mut structured_htf = None;
         if let Some(htf) = htf_tf {
-            if let Ok(htf_bars) = self.fetch_raw_candles(inst_id, htf, 40).await {
+            if let Ok(htf_bars) = self.fetch_raw_candles(inst_id, htf, 220).await {
                 if let Some(htf_frame) = build_analysis_frame(&htf_bars, 20, inst_id, htf, None) {
+                    structured_htf = Some(htf_frame.clone());
                     if let Some(latest) = htf_frame.bars.first() {
                         let htf_close = latest.close;
                         let htf_ema20 = htf_frame.indicators.ema20.first().copied().unwrap_or(0.0);
@@ -704,7 +764,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
                              - **HTF EMA20**: {:.4}\n\
                              - **HTF SMA170**: {:.4}\n\
                              - **宏观格局偏向**: {}\n\
-                             - **共振交易指引**: 顺大做小。低级别入场信号若与 HTF 趋势共振（如 15m 多单 + 1H 偏多），期望值显著提高；若逆 HTF 趋势，必须严守短线与快速保本原则！",
+                             - **共振交易指引**: 顺大做小。低级别入场信号若与 HTF 趋势共振（如 15m 多单 + 1H 偏多），仍需结构和成本校验；回归策略须检查强逆向趋势，不能把共振当作实测胜率。",
                             htf, htf_close, htf_ema20, htf_sma170, htf_trend
                         ));
                     }
@@ -714,207 +774,51 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
 
         let record = {
             let orch = self.orchestrator.read().clone();
-            orch.run_analysis_with_system_and_pos(&frame, &system, Some(&pos_ctx), htf_context_str.as_deref()).await?
+            orch.run_analysis_with_market_context(&frame, &system, Some(&pos_ctx), htf_context_str.as_deref(), structured_htf.as_ref()).await?
         };
 
         let mut execution_res = Value::Null;
         if execute {
-            if let Some(dec_wrap) = &record.stage2_decision {
-                let dec = dec_wrap.get("decision").unwrap_or(dec_wrap);
-                let order_type = dec.get("order_type").and_then(|v| v.as_str()).unwrap_or("");
-                let action = dec.get("action").and_then(|v| v.as_str()).unwrap_or("");
-
-                if ["限价单", "突破单", "市价单"].contains(&order_type) || action == "OPEN" {
-                    let sig_ts = frame.bars.first().map(|b| b.ts_open).unwrap_or(0);
-                    let executor = self.executor.read().clone();
-                    let result = executor.execute(inst_id, timeframe, sig_ts, dec).await;
-                    execution_res = serde_json::to_value(result).unwrap_or(Value::Null);
-                } else if order_type == "平仓" || action == "CLOSE_EARLY" {
-                    if pos_ctx.has_position {
-                        info!("Executing CLOSE_EARLY for {}...", inst_id);
-                        match client.close_position(inst_id, &pos_ctx.mgn_mode, None).await {
-                            Ok(res) => {
-                                execution_res = serde_json::json!({
-                                    "submitted": true,
-                                    "action": "CLOSE_EARLY",
-                                    "symbol": inst_id,
-                                    "reason": "AI 主动平仓 (CLOSE_EARLY) 离场成功",
-                                    "response": res
-                                });
-                            }
-                            Err(e) => {
-                                execution_res = serde_json::json!({
-                                    "submitted": false,
-                                    "action": "CLOSE_EARLY",
-                                    "symbol": inst_id,
-                                    "reason": format!("AI 主动平仓失败: {}", e)
-                                });
-                            }
-                        }
-                    } else {
-                        execution_res = serde_json::json!({
-                            "submitted": false,
-                            "action": "CLOSE_EARLY",
-                            "symbol": inst_id,
-                            "reason": "当前无持仓，无需执行平仓"
-                        });
+            self.ensure_execution_enabled()?;
+            if let Some(wrapper) = &record.stage2_decision {
+                let dec = wrapper.get("decision").unwrap_or(wrapper);
+                let order_type = dec["order_type"].as_str().unwrap_or("");
+                let action = dec["action"].as_str().unwrap_or("");
+                let executor = self.executor.read().clone();
+                let timestamp = frame.bars.first().map(|b| b.ts_open).unwrap_or(0);
+                if ["限价单", "突破单", "市价单"].contains(&order_type) && !["HOLD","WAIT","CLOSE_EARLY"].contains(&action) {
+                    let mut decision = dec.clone();
+                    if let Some(atr) = frame.indicators.atr14.first().filter(|a| a.is_finite() && **a > 0.0) {
+                        decision["atr14"] = serde_json::json!(atr);
                     }
-                } else if order_type == "修改止损" || action == "MOVE_STOP_LOSS" {
-                    let new_sl = dec.get("new_stop_loss_price").and_then(|v| v.as_f64())
-                        .or_else(|| dec.get("stop_loss_price").and_then(|v| v.as_f64()));
-
-                    if let Some(n_sl) = new_sl {
-                        if pos_ctx.has_position {
-                            // 铁律校验：单向移损（多单只能上移，空单只能下移）
-                            let is_long = pos_ctx.pos_side == "long";
-                            let is_valid_trailing = match pos_ctx.current_sl {
-                                Some(cur_sl) => {
-                                    if is_long { n_sl > cur_sl } else { n_sl < cur_sl }
-                                }
-                                None => true,
-                            };
-
-                            if is_valid_trailing {
-                                info!("Executing MOVE_STOP_LOSS for {} to {}...", inst_id, n_sl);
-                                let mut amend_success = false;
-                                if let Some(algo_id) = &pos_ctx.algo_id {
-                                    if let Ok(res) = client.amend_algo_order(inst_id, algo_id, Some(n_sl), None).await {
-                                        amend_success = true;
-                                        execution_res = serde_json::json!({
-                                            "submitted": true,
-                                            "action": "MOVE_STOP_LOSS",
-                                            "symbol": inst_id,
-                                            "new_stop_loss": n_sl,
-                                            "reason": format!("已成功修改 OKX 止损委托至 {}", n_sl),
-                                            "response": res
-                                        });
-                                    }
-                                }
-
-                                if !amend_success {
-                                    // 若无现有 algo 或修改失败，撤销同品种旧条件单并重新下达保护止损
-                                    if let Ok(old_algos) = client.get_pending_algo_orders(Some(inst_id), "conditional").await {
-                                        for a in old_algos {
-                                            if let Some(aid) = a.get("algoId").and_then(|v| v.as_str()) {
-                                                let _ = client.cancel_algo_order(inst_id, aid).await;
-                                            }
-                                        }
-                                    }
-                                    let close_side = if is_long { "sell" } else { "buy" };
-                                    let algo_payload = serde_json::json!({
-                                        "instId": inst_id,
-                                        "tdMode": pos_ctx.mgn_mode,
-                                        "side": close_side,
-                                        "ordType": "conditional",
-                                        "sz": pos_ctx.pos_size,
-                                        "slTriggerPx": n_sl.to_string(),
-                                        "slOrdPx": "-1"
-                                    });
-                                    match client.place_algo_order(&algo_payload).await {
-                                        Ok(res) => {
-                                            execution_res = serde_json::json!({
-                                                "submitted": true,
-                                                "action": "MOVE_STOP_LOSS",
-                                                "symbol": inst_id,
-                                                "new_stop_loss": n_sl,
-                                                "reason": format!("已重新挂设保护止损至 {}", n_sl),
-                                                "response": res
-                                            });
-                                        }
-                                        Err(e) => {
-                                            execution_res = serde_json::json!({
-                                                "submitted": false,
-                                                "action": "MOVE_STOP_LOSS",
-                                                "symbol": inst_id,
-                                                "reason": format!("设置保护止损失败: {}", e)
-                                            });
-                                        }
-                                    }
-                                }
-                            } else {
-                                execution_res = serde_json::json!({
-                                    "submitted": false,
-                                    "action": "MOVE_STOP_LOSS",
-                                    "symbol": inst_id,
-                                    "reason": format!("拒绝逆向扩大止损扛单！当前止损: {:?}, 目标止损: {}", pos_ctx.current_sl, n_sl)
-                                });
-                            }
-                        } else {
-                            execution_res = serde_json::json!({
-                                "submitted": false,
-                                "action": "MOVE_STOP_LOSS",
-                                "symbol": inst_id,
-                                "reason": "当前无持仓，无法移动止损"
-                            });
-                        }
-                    }
-                } else if order_type == "修改止盈" || action == "MOVE_TAKE_PROFIT" || action == "TRAILING_TAKE_PROFIT" {
-                    let new_tp = dec.get("new_take_profit_price").and_then(|v| v.as_f64())
-                        .or_else(|| dec.get("take_profit_price").and_then(|v| v.as_f64()));
-
-                    if let Some(n_tp) = new_tp {
-                        if pos_ctx.has_position {
-                            info!("Executing MOVE_TAKE_PROFIT for {} to {}...", inst_id, n_tp);
-                            let mut amend_success = false;
-                            if let Some(algo_id) = &pos_ctx.algo_id {
-                                if let Ok(res) = client.amend_algo_order(inst_id, algo_id, None, Some(n_tp)).await {
-                                    amend_success = true;
-                                    execution_res = serde_json::json!({
-                                        "submitted": true,
-                                        "action": "MOVE_TAKE_PROFIT",
-                                        "symbol": inst_id,
-                                        "new_take_profit": n_tp,
-                                        "reason": format!("已成功动态修改 OKX 止盈委托至 {}", n_tp),
-                                        "response": res
-                                    });
-                                }
-                            }
-                            if !amend_success {
-                                execution_res = serde_json::json!({
-                                    "submitted": false,
-                                    "action": "MOVE_TAKE_PROFIT",
-                                    "symbol": inst_id,
-                                    "reason": "未找到关联条件单或修改止盈失败"
-                                });
-                            }
-                        } else {
-                            execution_res = serde_json::json!({
-                                "submitted": false,
-                                "action": "MOVE_TAKE_PROFIT",
-                                "symbol": inst_id,
-                                "reason": "当前无持仓，无法移动止盈"
-                            });
-                        }
-                    }
-                } else if order_type == "修改止盈止损" || action == "MOVE_SL_TP" {
-                    let new_sl = dec.get("new_stop_loss_price").and_then(|v| v.as_f64())
-                        .or_else(|| dec.get("stop_loss_price").and_then(|v| v.as_f64()));
-                    let new_tp = dec.get("new_take_profit_price").and_then(|v| v.as_f64())
-                        .or_else(|| dec.get("take_profit_price").and_then(|v| v.as_f64()));
-
-                    if pos_ctx.has_position {
-                        if let Some(algo_id) = &pos_ctx.algo_id {
-                            if let Ok(res) = client.amend_algo_order(inst_id, algo_id, new_sl, new_tp).await {
-                                execution_res = serde_json::json!({
-                                    "submitted": true,
-                                    "action": "MOVE_SL_TP",
-                                    "symbol": inst_id,
-                                    "new_sl": new_sl,
-                                    "new_tp": new_tp,
-                                    "reason": "已成功同步更新 OKX 止损与止盈委托",
-                                    "response": res
-                                });
-                            }
-                        }
-                    }
+                    // Quant strength is not a calibrated directional veto for the LLM strategy.
+                    let result = executor.execute(inst_id, timeframe, timestamp, &decision).await;
+                    execution_res = serde_json::to_value(result)?;
+                } else if ["平仓","修改止损","修改止盈","修改止盈止损"].contains(&order_type)
+                    || ["CLOSE_EARLY","MOVE_STOP_LOSS","MOVE_TAKE_PROFIT","TRAILING_TAKE_PROFIT","MOVE_SL_TP"].contains(&action) {
+                    let result = crate::web::positions::execute_management(&client, inst_id, &position_mode, dec).await;
+                    let execution = crate::okx::trading::ExecutionResult {
+                        submitted: result.is_ok(),
+                        signal_id: OKXTradeExecutor::generate_signal_id(inst_id,timeframe,timestamp,dec),
+                        request: serde_json::json!({"instId": inst_id, "action": action, "ordType": order_type}),
+                        response: result.as_ref().ok().cloned(),
+                        reason: result.err().map(|e| e.to_string()).unwrap_or_else(|| "持仓管理请求已提交".into()),
+                        error_code: String::new(), broker_tag: BROKER_TAG.into(),
+                    };
+                    executor.audit(&execution, inst_id,timeframe,dec);
+                    execution_res = serde_json::to_value(execution)?;
                 }
             }
         }
 
-        let system_name = if system == "dog_walking" {
+        let system_name = if system == "dog_reversion" {
             "🐕 遛狗系统 (SMA 14/170 均线回归)"
+        } else if system == "dog_trend" {
+            "遛狗顺势回踩"
         } else if system == "adaptive" {
-            "🧠 智能自适应双引擎 (2PA + 遛狗)"
+            "🧠 自适应观察模式（不开新仓）"
+        } else if system == "alpha_pilot" {
+            "⚡ AlphaPilot 量化因子系统"
         } else {
             "2PA 价格行为系统 (Al Brooks)"
         };
@@ -937,16 +841,29 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         Ok(output)
     }
 
+    pub fn ensure_execution_enabled(&self) -> Result<()> {
+        let settings = self.settings.read();
+        anyhow::ensure!(settings.is_okx_configured(), "OKX 凭据未配置");
+        anyhow::ensure!(settings.okx.demo_trading || settings.okx.live_trading_acknowledged, "实盘执行未授权");
+        anyhow::ensure!(*self.automation_enabled.read(), "交易执行开关未开启");
+        Ok(())
+    }
+
     pub async fn automation_tick(&self) -> Result<()> {
         let auto_enabled = *self.automation_enabled.read();
         let session = self.automation_session.read().clone();
-        if !auto_enabled || !session.is_open_at(Some(Utc::now())) {
-            return Ok(());
-        }
+        if !auto_enabled { return Ok(()); }
+        self.ensure_execution_enabled()?;
 
         let symbol = self.automation_symbol.read().clone();
         let timeframe = self.automation_timeframe.read().clone();
 
+        {
+            let _guard = self.operation_lock.lock().await;
+            let executor = self.executor.read().clone();
+            executor.cancel_expired_entries(&symbol, &timeframe).await?;
+        }
+        if !session.is_open_at(Some(Utc::now())) { return Ok(()); }
         let raw = match self.fetch_raw_candles(&symbol, &timeframe, 3).await {
             Ok(b) => b,
             Err(e) => {

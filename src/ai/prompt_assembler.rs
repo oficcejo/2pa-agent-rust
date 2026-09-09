@@ -1,14 +1,10 @@
 use crate::ai::decision_stance::build_decision_stance_guidance;
-use crate::ai::pattern_routing::{
-    route_strategy_files, STAGE1_DETECTED_PATTERNS_GUIDE, STAGE1_PATTERN_BRIEFS_BLOCK,
-};
-use crate::ai::prompts::get_prompt_file;
 use crate::data::base::KlineFrame;
 use crate::data::geometry::compute_kline_geometry_features;
-use crate::records::experience::ExperienceReader;
 use crate::records::schema::ExperienceEntry;
 use serde_json::Value;
 use std::path::Path;
+
 
 pub const LANGUAGE_ZH_RULE: &str = "\
 ## 语言要求（阶段一、阶段二均必须遵守）
@@ -35,131 +31,12 @@ JSON 格式要求包含以下核心字段：
 - `diagnosis_summary`: 阶段一诊断通俗总结文本
 - `reasoning`: 诊断思考与逻辑说明";
 
-pub const STAGE2_SYSTEM_PROMPT: &str = "\
-你是一个专业的 Price Action (PA) 交易决策执行引擎。
-你的任务是在【阶段一：市场诊断】的基础上，结合价格行为策略库与历史经验，给出明确的【阶段二：交易决策】。
+pub const STAGE2_SYSTEM_PROMPT: &str = include_str!("../../prompt_engineering/strategy_v1.txt");
 
-你必须严格输出符合规范的纯 JSON 格式。
-
-JSON 格式要求包含以下核心字段：
-- `decision`: {
-    \"order_type\": \"限价单\" | \"突破单\" | \"市价单\" | \"不下单\",
-    \"order_direction\": \"做多\" | \"做空\" | \"neutral\" | null,
-    \"entry_price\": 数字或 null,
-    \"stop_loss_price\": 数字或 null,
-    \"take_profit_price\": 数字或 null,
-    \"trade_confidence\": 0-100 整数,
-    \"estimated_win_rate\": 0-100 整数或 null,
-    \"estimated_win_rate_reasoning\": 胜率估算说明,
-    \"risk_reward_ratio\": 盈亏比数字或 null,
-    \"traders_equation_passes\": true | false,
-    \"reasoning\": 通俗易懂的交易决策理由
-  }
-- `decision_trace`: 二元决策树节点执行追踪
-- `terminal`: { \"outcome\": \"trade\" | \"wait\" | \"reject\", \"label\": \"总结标签\", \"node_id\": \"最终节点\" }
-- `watch_points`: 观察要点列表
-- `invalidation_condition`: 方案失效条件描述";
-
-pub const DOG_WALKING_STAGE1_SYSTEM_PROMPT: &str = "\
-你是一个专业的【遛狗系统（SMA 14/170 均线回归与偏离力学）】AI 分析师。
-你的任务是对提供的 K 线数据、SMA 14 狗绳线、SMA 170 主人均线及偏离度指标进行【阶段一：市场诊断】。
-
-你必须严格输出符合规范的纯 JSON 格式（不得输出额外的 Markdown 文本或前后解释）。
-
-JSON 格式要求包含以下核心字段：
-- `trading_system`: \"dog_walking\"
-- `cycle_position`: 市场状态 (overstretched_bullish / overstretched_bearish / owner_bounce_support / owner_bounce_resistance / leash_reversion_in_progress / hugging_owner)
-- `sma170_slope`: 170均线斜率 (rising / falling / flat)
-- `leash_multiplier`: 绳索拉力系数 (偏离点数 / ATR14 倍数数字)
-- `dev_pct`: 相对170均线偏离百分比数字 (如 2.45 表示 +2.45%)
-- `dominant_force`: 当前多空主导力量 (bulls / bears / neutral)
-- `trend_state`: 趋势状态描述
-- `key_levels`: 关键支撑与阻力位列表 (需标明 SMA 170、SMA 14、偏离极值点等)
-- `detected_patterns`: 识别出的形态列表 (如 break_below_sma14, break_above_sma14, bearish_pinbar_at_high, bullish_pinbar_at_low, bearish_engulfing, bullish_engulfing, divergence_exhaustion, rejection_at_170 等)
-- `gate_result`: 阶段一闸门裁定 (proceed / wait)
-- `gate_trace`: 闸门逐项检查追踪列表
-- `diagnosis_summary`: 阶段一诊断通俗总结文本
-- `reasoning`: 诊断思考与逻辑说明";
-
-pub const DOG_WALKING_STAGE2_SYSTEM_PROMPT: &str = "\
-你是一个专业的【遛狗系统（SMA 14/170 均线回归与偏离力学）】交易决策执行引擎。
-你的任务是在【阶段一：市场诊断】的基础上，结合遛狗交易策略库，给出明确的【阶段二：交易决策】与精确的三价计划（Entry、SL、TP1、TP2=SMA170）。
-
-你必须严格输出符合规范的纯 JSON 格式。
-
-JSON 格式要求包含以下核心字段：
-- `trading_system`: \"dog_walking\"
-- `decision`: {
-    \"order_type\": \"限价单\" | \"突破单\" | \"市价单\" | \"不下单\",
-    \"order_direction\": \"做多\" | \"做空\" | null,
-    \"entry_price\": 数字或 null,
-    \"stop_loss_price\": 数字或 null,
-    \"take_profit_price\": 数字或 null (偏离回归单核心目标必须设为 SMA 170 价格),
-    \"take_profit_price_2\": 数字或 null (第一目标/防守目标),
-    \"trade_confidence\": 0-100 整数,
-    \"estimated_win_rate\": 0-100 整数或 null,
-    \"estimated_win_rate_reasoning\": 胜率估算说明,
-    \"risk_reward_ratio\": 盈亏比数字或 null,
-    \"traders_equation_passes\": true | false,
-    \"reasoning\": 通俗易懂的交易决策理由 (重点阐述偏离度、小狗力竭拐点及奔向 170 主人均线的回归逻辑)
-  }
-- `decision_trace`: 二元决策树节点执行追踪
-- `terminal`: { \"outcome\": \"trade\" | \"wait\" | \"reject\", \"label\": \"总结标签\", \"node_id\": \"最终节点\" }
-- `watch_points`: 观察要点列表
-- `invalidation_condition`: 方案失效条件描述";
-
-pub const ADAPTIVE_STAGE1_SYSTEM_PROMPT: &str = "\
-你是一个融合了【Al Brooks 2PA 价格行为学】与【14/170 双均线遛狗动力学】的智能自适应量化交易架构师。
-你的任务是对提供的 K 线数据、EMA20、SMA 14 狗绳、SMA 170 主人均线及偏离度指标进行【阶段一：自适应宏观与微观综合诊断】。
-
-你必须严格输出纯 JSON 格式。
-核心字段规范：
-- `trading_system`: \"adaptive\"
-- `recommended_subsystem`: \"2pa\" | \"dog_walking\" | \"wait\"
-- `cycle_position`: 市场周期形态 (spike / tight_channel / broad_channel / trading_range / overstretched_bullish / overstretched_bearish / hugging_owner 等)
-- `sma170_slope`: 170均线斜率 (rising / falling / flat)
-- `leash_multiplier`: 绳索拉力系数 (偏离点数 / ATR14)
-- `dev_pct`: 相对 170 均线偏离百分比
-- `dominant_force`: 当前多空主导力量 (bulls / bears / neutral)
-- `trend_state`: 趋势与结构描述
-- `key_levels`: 关键支撑阻力位列表 (标明 EMA20、SMA170、近期极值)
-- `detected_patterns`: 识别出的 PA 与均线形态 (如 wedge, h2, l2, break_below_sma14, barbwire 等)
-- `gate_result`: 阶段一闸门裁定 (proceed / wait)
-- `gate_trace`: 闸门逐项检查追踪列表
-- `diagnosis_summary`: 阶段一诊断通俗总结文本
-- `reasoning`: 诊断思考说明";
-
-pub const ADAPTIVE_STAGE2_SYSTEM_PROMPT: &str = "\
-你是一个融合了【Al Brooks 2PA 价格行为学】与【14/170 双均线遛狗动力学】的交易决策执行引擎。
-你的任务是在阶段一诊断的基础上，自适应选择最适配当前行情的子系统策略：
-1. 震荡区间 (Trading Range) 或 通道顺势 (Channel) 优先走 2PA 二次入场策略；
-2. 极端偏离拉伸（Leash Multiplier >= 2.5 ATR）且出现衰竭信号，优先走遛狗系统 SMA 170 均线大回归策略；
-3. 铁丝网 (Barbwire) 或 主人身边缠绕 (hugging_owner) 严格观望不下单。
-
-你必须严格输出纯 JSON 格式。
-核心字段规范：
-- `trading_system`: \"adaptive\"
-- `active_subsystem`: \"2pa\" | \"dog_walking\" | \"none\"
-- `decision`: {
-    \"action\": \"OPEN\" | \"HOLD\" | \"MOVE_STOP_LOSS\" | \"MOVE_TAKE_PROFIT\" | \"CLOSE_EARLY\" | \"WAIT\",
-    \"order_type\": \"限价单\" | \"突破单\" | \"市价单\" | \"修改止损\" | \"修改止盈\" | \"平仓\" | \"持有\" | \"不下单\",
-    \"order_direction\": \"做多\" | \"做空\" | null,
-    \"entry_price\": 数字或 null,
-    \"stop_loss_price\": 数字或 null,
-    \"take_profit_price\": 数字或 null,
-    \"new_stop_loss_price\": 数字或 null,
-    \"new_take_profit_price\": 数字或 null,
-    \"trade_confidence\": 0-100 整数,
-    \"estimated_win_rate\": 0-100 整数或 null,
-    \"estimated_win_rate_reasoning\": 胜率估算说明,
-    \"risk_reward_ratio\": 盈亏比数字或 null,
-    \"traders_equation_passes\": true | false,
-    \"reasoning\": 通俗易懂的交易决策理由
-  }
-- `decision_trace`: 决策树执行追踪
-- `terminal`: { \"outcome\": \"trade\" | \"hold\" | \"move_stop\" | \"close\" | \"wait\", \"label\": \"总结标签\", \"node_id\": \"最终节点\" }
-- `watch_points`: 观察要点列表
-- `invalidation_condition`: 方案失效条件描述";
+pub const DOG_WALKING_STAGE1_SYSTEM_PROMPT: &str = STAGE1_SYSTEM_PROMPT;
+pub const DOG_WALKING_STAGE2_SYSTEM_PROMPT: &str = include_str!("../../prompt_engineering/strategy_v1.txt");
+pub const ADAPTIVE_STAGE1_SYSTEM_PROMPT: &str = STAGE1_SYSTEM_PROMPT;
+pub const ADAPTIVE_STAGE2_SYSTEM_PROMPT: &str = DOG_WALKING_STAGE2_SYSTEM_PROMPT;
 
 fn format_bar_time(ts: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ts)
@@ -375,217 +252,24 @@ pub fn build_stage2_prompt(
 }
 
 pub fn build_stage1_prompt_for_system(
-    system: &str,
-    frame: &KlineFrame,
-    prompt_dir: Option<&Path>,
-    htf_context: Option<&str>,
+    system: &str, frame: &KlineFrame, _prompt_dir: Option<&Path>, htf_context: Option<&str>,
 ) -> String {
-    let htf_section = match htf_context {
-        Some(htf) if !htf.trim().is_empty() => format!("\n\n## 🌐 【高时间框架 (HTF 宏观趋势共振背景)】\n{}\n", htf.trim()),
-        _ => String::new(),
-    };
-
-    if system.eq_ignore_ascii_case("adaptive") || system.contains("自适应") {
-        let dog_framework = get_prompt_file("遛狗系统_市场诊断框架.txt", prompt_dir);
-        let pa_framework = get_prompt_file("市场诊断框架.txt", prompt_dir);
-        let binary_decision = get_prompt_file("二元决策.txt", prompt_dir);
-        let kline_table = render_dog_walking_kline_table(frame);
-        let geometry_table = render_geometry_features_table(frame);
-
-        format!(
-            "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## 当前分析标的与 K 线指标数据\n- 标的: {}\n- 周期: {}\n- K 线根数: {}\n\n### K 线及双均线偏离指标表 (SMA14 狗绳 / SMA170 主人)\n{}\n\n### 最近 K 线几何特征表\n{}\n\n请严格基于上述双均线偏离度与 PA 综合数据与规则，输出【自适应阶段一：市场诊断】纯 JSON 格式。",
-            ADAPTIVE_STAGE1_SYSTEM_PROMPT,
-            LANGUAGE_ZH_RULE,
-            dog_framework,
-            pa_framework,
-            binary_decision,
-            htf_section,
-            frame.symbol,
-            frame.timeframe,
-            frame.bars.len(),
-            kline_table,
-            geometry_table
-        )
-    } else if system.eq_ignore_ascii_case("dog_walking") || system.contains("遛狗") {
-        let persona = get_prompt_file("遛狗系统_人设与思维方式.txt", prompt_dir);
-        let framework = get_prompt_file("遛狗系统_市场诊断框架.txt", prompt_dir);
-        let kline_table = render_dog_walking_kline_table(frame);
-        let geometry_table = render_geometry_features_table(frame);
-
-        format!(
-            "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## 当前分析标的与 K 线指标数据\n- 标的: {}\n- 周期: {}\n- K 线根数: {}\n\n### K 线及双均线偏离指标表 (SMA14 狗绳 / SMA170 主人)\n{}\n\n### 最近 K 线几何特征表\n{}\n\n请严格基于上述双均线偏离度数据与遛狗系统规则，输出【阶段一：市场诊断】纯 JSON 格式。",
-            DOG_WALKING_STAGE1_SYSTEM_PROMPT,
-            LANGUAGE_ZH_RULE,
-            persona,
-            framework,
-            htf_section,
-            frame.symbol,
-            frame.timeframe,
-            frame.bars.len(),
-            kline_table,
-            geometry_table
-        )
-    } else {
-        let diagnosis_framework = get_prompt_file("市场诊断框架.txt", prompt_dir);
-        let binary_decision = get_prompt_file("二元决策.txt", prompt_dir);
-        let kline_table = render_kline_table(frame);
-        let geometry_table = render_geometry_features_table(frame);
-
-        format!(
-            "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## 当前分析标的与 K 线数据\n- 标的: {}\n- 周期: {}\n- K 线根数: {}\n\n### K 线及基础指标表\n{}\n\n### 最近 K 线几何特征表\n{}\n\n请严格基于上述数据与规则，输出【阶段一：市场诊断】纯 JSON 格式。",
-            STAGE1_SYSTEM_PROMPT,
-            LANGUAGE_ZH_RULE,
-            STAGE1_DETECTED_PATTERNS_GUIDE,
-            STAGE1_PATTERN_BRIEFS_BLOCK,
-            diagnosis_framework,
-            binary_decision,
-            htf_section,
-            frame.symbol,
-            frame.timeframe,
-            frame.bars.len(),
-            kline_table,
-            geometry_table
-        )
-    }
+    format!("{}\n{}\n策略：{}\n{}\n{}\n高时间框架：{}\n阶段一：仅输出市场诊断 JSON。",
+        LANGUAGE_ZH_RULE, include_str!("../../prompt_engineering/strategy_v1.txt"),
+        crate::strategies::canonical(system).unwrap_or("unknown"),
+        render_kline_table(frame), render_dog_walking_kline_table(frame), htf_context.unwrap_or("高周期数据缺失"))
 }
 
 pub fn build_stage2_prompt_for_system(
-    system: &str,
-    frame: &KlineFrame,
-    stage1_diagnosis: &Value,
-    decision_stance: &str,
-    load_all_strategies: bool,
-    prompt_dir: Option<&Path>,
-    experience_dir: Option<&Path>,
-    position_context: Option<&PositionContext>,
-    htf_context: Option<&str>,
+    system: &str, frame: &KlineFrame, stage1_diagnosis: &Value, decision_stance: &str,
+    _load_all_strategies: bool, _prompt_dir: Option<&Path>, _experience_dir: Option<&Path>,
+    position_context: Option<&PositionContext>, htf_context: Option<&str>,
 ) -> (String, Vec<String>, Vec<ExperienceEntry>) {
-    let position_section = render_position_context_section(position_context);
-    let htf_section = match htf_context {
-        Some(htf) if !htf.trim().is_empty() => format!("\n\n## 🌐 【高时间框架 (HTF 宏观趋势共振背景)】\n{}\n", htf.trim()),
-        _ => String::new(),
-    };
-
-    if system.eq_ignore_ascii_case("adaptive") || system.contains("自适应") {
-        let rec_subsystem = stage1_diagnosis.get("recommended_subsystem").and_then(|v| v.as_str()).unwrap_or("");
-        let cycle_pos = stage1_diagnosis.get("cycle_position").and_then(|v| v.as_str()).unwrap_or("");
-        let is_dog = rec_subsystem == "dog_walking"
-            || cycle_pos.contains("overstretched")
-            || cycle_pos.contains("owner");
-
-        let mut strategy_files = Vec::new();
-        let mut strategy_contents = String::new();
-
-        if is_dog {
-            let dog_strategy = get_prompt_file("遛狗系统_交易决策策略.txt", prompt_dir);
-            strategy_contents.push_str(&format!("\n\n### 🐶 遛狗均线回归策略库\n{}", dog_strategy));
-            strategy_files.push("遛狗系统_交易决策策略.txt".to_string());
-        } else {
-            let detected_patterns: Vec<String> = stage1_diagnosis.get("detected_patterns")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-                .unwrap_or_default();
-            let pa_files = route_strategy_files(cycle_pos, &detected_patterns, load_all_strategies);
-            for fname in &pa_files {
-                let content = get_prompt_file(fname, prompt_dir);
-                if !content.is_empty() {
-                    strategy_contents.push_str(&format!("\n\n### 策略文档: {}\n{}", fname, content));
-                    strategy_files.push(fname.clone());
-                }
-            }
-        }
-
-        let stance_guidance = build_decision_stance_guidance(decision_stance);
-        let kline_table = render_dog_walking_kline_table(frame);
-
-        let prompt = format!(
-            "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## 阶段一自适应诊断结果\n```json\n{}\n```\n\n## 适用策略库规则{}\n\n## 最新 K 线及指标数据\n{}\n\n请根据【当前账户持仓状态】、阶段一诊断、策略库及交易倾向，输出【阶段二：自适应交易决策与持仓生命周期管理】纯 JSON 格式。",
-            ADAPTIVE_STAGE2_SYSTEM_PROMPT,
-            LANGUAGE_ZH_RULE,
-            stance_guidance,
-            position_section,
-            htf_section,
-            serde_json::to_string_pretty(stage1_diagnosis).unwrap_or_default(),
-            strategy_contents,
-            kline_table
-        );
-
-        (prompt, strategy_files, Vec::new())
-    } else if system.eq_ignore_ascii_case("dog_walking") || system.contains("遛狗") {
-        let persona = get_prompt_file("遛狗系统_人设与思维方式.txt", prompt_dir);
-        let strategy = get_prompt_file("遛狗系统_交易决策策略.txt", prompt_dir);
-        let stance_guidance = build_decision_stance_guidance(decision_stance);
-        let kline_table = render_dog_walking_kline_table(frame);
-
-        let prompt = format!(
-            "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## 阶段一诊断结果\n```json\n{}\n```\n\n## 最新 K 线及双均线偏离数据\n{}\n\n请根据【当前账户持仓状态】、阶段一诊断、遛狗交易策略库及交易倾向，输出【阶段二：交易决策与持仓生命周期管理】纯 JSON 格式（偏离回归单核心止盈目标请严格对齐当前 SMA 170 价格）。",
-            DOG_WALKING_STAGE2_SYSTEM_PROMPT,
-            LANGUAGE_ZH_RULE,
-            persona,
-            strategy,
-            stance_guidance,
-            position_section,
-            htf_section,
-            serde_json::to_string_pretty(stage1_diagnosis).unwrap_or_default(),
-            kline_table
-        );
-
-        (
-            prompt,
-            vec!["遛狗系统_交易决策策略.txt".to_string()],
-            Vec::new(),
-        )
-    } else {
-        let cycle_pos = stage1_diagnosis.get("cycle_position").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let detected_patterns: Vec<String> = stage1_diagnosis.get("detected_patterns")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default();
-
-        let strategy_files = route_strategy_files(cycle_pos, &detected_patterns, load_all_strategies);
-
-        let mut strategy_contents = String::new();
-        for fname in &strategy_files {
-            let content = get_prompt_file(fname, prompt_dir);
-            if !content.is_empty() {
-                strategy_contents.push_str(&format!("\n\n### 策略文档: {}\n{}", fname, content));
-            }
-        }
-
-        let stance_guidance = build_decision_stance_guidance(decision_stance);
-
-        // Read experiences
-        let exp_reader = ExperienceReader::new(experience_dir.unwrap_or_else(|| Path::new("experience")));
-        let dominant_force = stage1_diagnosis.get("dominant_force").and_then(|v| v.as_str()).unwrap_or("");
-        let experiences = exp_reader.read_for_stage2(cycle_pos, dominant_force, &detected_patterns, 3);
-
-        let mut experience_text = String::new();
-        if !experiences.is_empty() {
-            experience_text.push_str("\n\n## 历史类似交易经验参考\n");
-            for exp in &experiences {
-                experience_text.push_str(&format!(
-                    "- [{}] {}: {}\n",
-                    exp.case_type, exp.filename, serde_json::to_string(&exp.content).unwrap_or_default()
-                ));
-            }
-        }
-
-        let kline_table = render_kline_table(frame);
-
-        let prompt = format!(
-            "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n## 阶段一诊断结果\n```json\n{}\n```\n\n## 适用策略库规则{}\n{}\n\n## 最新 K 线数据\n{}\n\n请根据【当前账户持仓状态】、阶段一诊断、策略库及交易倾向，输出【阶段二：交易决策与持仓生命周期管理】纯 JSON 格式。",
-            STAGE2_SYSTEM_PROMPT,
-            LANGUAGE_ZH_RULE,
-            stance_guidance,
-            position_section,
-            htf_section,
-            serde_json::to_string_pretty(stage1_diagnosis).unwrap_or_default(),
-            strategy_contents,
-            experience_text,
-            kline_table
-        );
-
-        (prompt, strategy_files, experiences)
-    }
+    let prompt = format!("{}\n{}\n策略：{}\n{}\n阶段一：{}\n持仓：{}\n{}\n{}\n{}\n阶段二：仅输出交易决策 JSON。",
+        LANGUAGE_ZH_RULE, include_str!("../../prompt_engineering/strategy_v1.txt"),
+        crate::strategies::canonical(system).unwrap_or("unknown"),
+        build_decision_stance_guidance(decision_stance), stage1_diagnosis,
+        serde_json::to_string(&position_context).unwrap_or_default(),
+        render_kline_table(frame), render_dog_walking_kline_table(frame), htf_context.unwrap_or("高周期数据缺失"));
+    (prompt, vec!["strategy_v1.txt".into()], vec![])
 }
-

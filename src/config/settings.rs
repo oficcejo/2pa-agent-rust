@@ -244,6 +244,8 @@ impl Default for OKXSettings {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default, skip_serializing)]
+    pub web_auth_token: String,
     #[serde(default)]
     pub provider: AIProviderSettings,
     #[serde(default)]
@@ -270,6 +272,9 @@ impl Settings {
         };
 
         // Apply environment variable overrides
+        if let Ok(v) = std::env::var("WEB_AUTH_TOKEN") {
+            settings.web_auth_token = v.trim().to_string();
+        }
         if let Ok(v) = std::env::var("LLM_API_KEY").or_else(|_| std::env::var("AI_API_KEY")) {
             if !v.trim().is_empty() { settings.provider.api_key = v.trim().to_string(); }
         }

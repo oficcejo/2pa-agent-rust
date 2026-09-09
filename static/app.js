@@ -1,3 +1,7 @@
+function historySystemLabel(id) { return ({"2pa":"旧版 2PA", "dog_walking":"旧版遛狗", "legacy_unknown":"旧版未归属"})[id] || systemLabel(id); }
+function canonicalSystem(id) { return ({"2pa":"2pa_trend", "dog_walking":"dog_reversion"})[id] || id; }
+function systemLabel(id) { return ({"2pa_trend":"2PA 趋势确认", "dog_reversion":"遛狗偏离回归", "dog_trend":"遛狗顺势回踩", "adaptive":"自适应观察（不开新仓）", "alpha_pilot":"AlphaPilot 量化因子"})[canonicalSystem(id)] || id || "旧版未归属"; }
+function isDogSystem(id) { return ["dog_reversion", "dog_trend"].includes(canonicalSystem(id)); }
 const $ = (id) => document.getElementById(id);
 
 let candles = [];
@@ -10,11 +14,11 @@ let decisionRecords = [];
 let tradeRecords = [];
 let sessionPresetOptions = [];
 let sessionDirty = false;
-let currentTradingSystem = "2pa";
+let currentTradingSystem = "2pa_trend";
 try {
   const savedSys = localStorage.getItem("okx_trading_system");
-  if (savedSys === "dog_walking" || savedSys === "2pa") {
-    currentTradingSystem = savedSys;
+  if (["dog_walking", "2pa", "2pa_trend", "dog_reversion", "dog_trend", "adaptive", "alpha_pilot"].includes(savedSys)) {
+    currentTradingSystem = canonicalSystem(savedSys);
   }
 } catch {}
 
@@ -106,7 +110,9 @@ async function api(path, options = {}) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-  const body = await response.json().catch(() => ({}));
+  const text = await response.text();
+  let body;
+  try { body = JSON.parse(text); } catch { body = { detail: text }; }
   if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
   return body;
 }
@@ -213,27 +219,9 @@ function renderAutomationStatus(state, forceSessionControls = false) {
   const autoSystem = $("autoSystem");
   if (autoSystem) {
     const sys = state.trading_system || currentTradingSystem;
-    autoSystem.innerHTML = sys === "dog_walking"
-      ? `<span style="color:var(--amber);font-weight:700">🐕 遛狗系统 (SMA 14/170)</span>`
-      : (sys === "adaptive"
-          ? `<span style="color:#a855f7;font-weight:700">🧠 智能自适应双引擎</span>`
-          : `<span style="color:var(--green);font-weight:700">2PA 价格行为</span>`);
+    autoSystem.textContent = systemLabel(sys);
   }
   renderAutomationSession(state, forceSessionControls);
-}
-
-function updateSystemUI() {
-  if ($("tradingSystemSelect")) {
-    $("tradingSystemSelect").value = currentTradingSystem || "2pa";
-  }
-  const autoSystem = $("autoSystem");
-  if (autoSystem) {
-    autoSystem.innerHTML = currentTradingSystem === "dog_walking"
-      ? `<span style="color:var(--amber);font-weight:700">🐕 遛狗系统 (SMA 14/170)</span>`
-      : (currentTradingSystem === "adaptive"
-          ? `<span style="color:#a855f7;font-weight:700">🧠 智能自适应双引擎</span>`
-          : `<span style="color:var(--green);font-weight:700">2PA 价格行为</span>`);
-  }
 }
 
 async function loadStatus() {
@@ -277,7 +265,7 @@ async function loadStatus() {
     confirmation.placeholder = `请在此输入 ${code} 确认开启`;
   }
   if (statusData.trading_system) {
-    currentTradingSystem = statusData.trading_system;
+    currentTradingSystem = canonicalSystem(statusData.trading_system);
     try {
       localStorage.setItem("okx_trading_system", currentTradingSystem);
     } catch {}
@@ -454,13 +442,15 @@ async function loadCandles() {
 function updateSystemUI() {
   const title = $("analysisTitle");
   if (title) {
-    title.textContent = currentTradingSystem === "dog_walking" ? "两阶段遛狗均线回归分析" : "两阶段价格行为分析";
+    title.textContent = systemLabel(currentTradingSystem) + "分析";
+  }
+  const btn = $("analyzeButton");
+  if (btn) {
+    btn.textContent = currentTradingSystem === "alpha_pilot" ? "运行量化因子分析" : "运行 AI 分析";
   }
   const autoSys = $("autoSystem");
   if (autoSys) {
-    autoSys.innerHTML = currentTradingSystem === "dog_walking"
-      ? `<span style="color:var(--amber);font-weight:700">🐕 遛狗系统 (SMA 14/170)</span>`
-      : `<span style="color:var(--green);font-weight:700">2PA 价格行为</span>`;
+    autoSys.textContent = systemLabel(currentTradingSystem);
   }
   const select = $("tradingSystemSelect");
   if (select && select.value !== currentTradingSystem) {
@@ -500,7 +490,7 @@ function drawChart() {
   let low = Math.min(...data.map((item) => item.low));
 
   // Include visible indicator lines in min/max bounds so lines are never clipped
-  if (currentTradingSystem === "dog_walking") {
+  if (isDogSystem(currentTradingSystem)) {
     sma14.forEach((val) => { if (val != null) { high = Math.max(high, val); low = Math.min(low, val); } });
     sma170.forEach((val) => { if (val != null) { high = Math.max(high, val); low = Math.min(low, val); } });
   } else {
@@ -544,7 +534,7 @@ function drawChart() {
   });
 
   // Draw Indicator Curves & Top Legend
-  if (currentTradingSystem === "dog_walking") {
+  if (isDogSystem(currentTradingSystem)) {
     // 1. Draw SMA 170 (Blue Line - Owner)
     context.save();
     context.strokeStyle = "#38bdf8";
@@ -658,9 +648,10 @@ function renderDecision(result) {
     : fmt(decision.stop_loss_price);
   $("stopPrice").textContent = stopDisplay;
   
-  $("targetPrice").textContent = decision.take_profit_price != null ? `${fmt(decision.take_profit_price)}${sys === "dog_walking" ? " (170均线)" : ""}` : "—";
+  $("targetPrice").textContent = decision.take_profit_price != null ? `${fmt(decision.take_profit_price)}` : "—";
   $("target2Price").textContent = fmt(decision.take_profit_price_2);
-  $("winRate").textContent = decision.estimated_win_rate == null ? "—" : `${decision.estimated_win_rate}%`;
+  $("netRiskReward").textContent = decision.strategy_version && decision.risk_reward_ratio != null ? fmt(decision.risk_reward_ratio) : "—";
+  $("winRate").textContent = decision.estimated_win_rate == null ? "无统计数据" : `${decision.estimated_win_rate}%`;
 
   // Render Position Context Badge
   const posBadge = $("positionContextBadge");
@@ -684,7 +675,13 @@ function renderDecision(result) {
     }
   }
 
-  const reasoningPrefix = sys === "dog_walking" ? "【🐕 遛狗系统决策】" : "【📊 2PA 价格行为决策】";
+  const reasoningPrefix = isDogSystem(sys)
+    ? "【🐕 遛狗系统决策】"
+    : (sys === "adaptive"
+        ? "【🧠 智能自适应决策】"
+        : (sys === "alpha_pilot"
+            ? "【⚡ AlphaPilot 量化决策】"
+            : "【📊 2PA 价格行为决策】"));
   $("reasoning").textContent = decision.reasoning ? `${reasoningPrefix}\n${decision.reasoning}` : (result.exception?.message || "无交易决策");
   $("executionResult").textContent = result.execution ? JSON.stringify(result.execution, null, 2) : "未提交订单";
 }
@@ -731,7 +728,7 @@ function renderDecisionHistory() {
             <span class="history-direction ${direction.className}">${direction.label}</span>
             <b>${confidence}</b>
           </span>
-          <span class="history-detail">${formatHistoryTime(timestamp)} · ${escapeHtml(timeframe)} · ${escapeHtml(orderTypeVal)}</span>
+          <span class="history-detail">${formatHistoryTime(timestamp)} · ${escapeHtml(timeframe)} · ${escapeHtml(historySystemLabel(record.trading_system || record.meta?.trading_system))} · ${escapeHtml(orderTypeVal)}</span>
           ${exception}
         </button>
         <button class="history-delete" type="button" data-action="delete-decision" data-id="${escapeHtml(id)}" title="删除决策记录" aria-label="删除决策记录">×</button>
@@ -769,11 +766,14 @@ function showDecisionRecord(recordId) {
     take_profit_price: record.take_profit_price ?? innerDec.take_profit_price,
     take_profit_price_2: record.take_profit_price_2 ?? innerDec.take_profit_price_2,
     estimated_win_rate: record.estimated_win_rate ?? innerDec.estimated_win_rate,
+    strategy_version: innerDec.strategy_version,
+    risk_reward_ratio: innerDec.risk_reward_ratio,
     reasoning: record.reasoning || innerDec.reasoning || innerDec.narrative,
   };
 
   renderDecision({
     decision: decisionData,
+    trading_system: record.trading_system || record.meta?.trading_system,
     stage1: record.stage1_diagnosis,
     stage2: record.stage2_decision,
     exception: record.exception ? { message: typeof record.exception === "string" ? record.exception : (record.exception.message || JSON.stringify(record.exception)) } : null,
@@ -831,6 +831,8 @@ function renderTradeHistory() {
     const price = record.price == null ? "市价" : fmt(record.price);
     const detail = [
       formatHistoryTime(record.timestamp_ms),
+      historySystemLabel(record.strategy_id),
+      record.strategy_version || "旧版本",
       record.timeframe || "—",
       orderTypes[record.order_type] || record.order_type || "无订单",
       `数量 ${fmt(record.size)}`,
@@ -884,8 +886,10 @@ async function deleteHistoryRecord(kind, recordId) {
 async function analyze() {
   const button = $("analyzeButton");
   button.disabled = true;
-  const sysName = currentTradingSystem === "dog_walking" ? "🐕 遛狗系统" : "📊 2PA 价格行为";
-  $("analysisState").textContent = `正在获取行情并运行【${sysName}】两阶段 AI…`;
+  const sysName = systemLabel(currentTradingSystem);
+  $("analysisState").textContent = currentTradingSystem === "alpha_pilot"
+    ? `正在获取 800 根已收盘 K 线并运行【${sysName}】…`
+    : `正在获取行情并运行【${sysName}】两阶段 AI…`;
   try {
     const result = await api("/api/analyze", {
       method: "POST",
@@ -1076,7 +1080,7 @@ function renderAccount(account) {
   $("accountUpdated").textContent = formatAccountTime(summary.updated_at_ms || Date.now());
 
   equityPoints = account.equity_curve || [];
-  $("equityRange").textContent = equityPoints.length ? `${equityPoints.length} 点` : "—";
+  $("equityRange").textContent = equityPoints.length ? `本次运行 ${equityPoints.length} 个观测点` : "—";
   renderBalances(account.balances || []);
   renderPositions(account.positions || []);
   renderOrders(account.orders || []);
@@ -1273,7 +1277,7 @@ $("tradingSystemSelect").addEventListener("change", async (e) => {
   } catch {}
   updateSystemUI();
   drawChart();
-  const name = currentTradingSystem === "dog_walking" ? "🐕 遛狗系统 (SMA 14/170)" : "📊 2PA 价格行为系统";
+  const name = systemLabel(currentTradingSystem);
   toast(`已切换交易系统为: ${name}`);
   try {
     const updatedStatus = await api("/api/trading_system", {
@@ -1302,7 +1306,7 @@ async function openConfigModal() {
     $("cfgLlmBaseUrl").value = cfg.llm_base_url || "https://api.deepseek.com";
     $("cfgLlmModel").value = cfg.llm_model || "deepseek-v4-flash";
     $("cfgLlmThinking").checked = Boolean(cfg.llm_thinking);
-    if ($("cfgTradingSystem")) $("cfgTradingSystem").value = cfg.trading_system || currentTradingSystem || "2pa";
+    if ($("cfgTradingSystem")) $("cfgTradingSystem").value = canonicalSystem(cfg.trading_system || currentTradingSystem || "2pa_trend");
     if (cfg.okx_base_url) $("cfgOkxBaseUrl").value = cfg.okx_base_url;
     $("cfgOkxDemoTrading").value = String(cfg.okx_demo_trading !== false);
     if ($("cfgOkxAutoOrderSizing")) $("cfgOkxAutoOrderSizing").checked = cfg.okx_auto_order_sizing !== false;
@@ -1560,7 +1564,7 @@ Promise.all([loadStatus(), loadInstruments(), loadCandles(), loadDecisionHistory
           body: JSON.stringify({ trading_system: savedSys }),
         });
         statusData = res;
-        currentTradingSystem = res.trading_system || savedSys;
+        currentTradingSystem = canonicalSystem(res.trading_system || savedSys);
         updateSystemUI();
         renderAutomationStatus(res);
         drawChart();

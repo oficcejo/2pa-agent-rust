@@ -35,13 +35,20 @@ pub fn render_index() -> Html<String> {
 }
 
 pub fn get_static_asset(path: &str) -> Response {
-    let clean_path = path.trim_start_matches('/');
+    let clean_path = path;
+    // Reject both Windows and Unix traversal syntax before accessing disk.
+    if clean_path.is_empty() || clean_path.contains(['\\', ':', '\0'])
+        || clean_path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+        return (StatusCode::NOT_FOUND, "File Not Found").into_response();
+    }
 
     // 1. Try local filesystem if static directory exists
     let disk_path = Path::new("static").join(clean_path);
-    if disk_path.is_file() {
-        if let Ok(bytes) = fs::read(&disk_path) {
-            return serve_bytes(&bytes, clean_path);
+    if let (Ok(root), Ok(resolved)) = (Path::new("static").canonicalize(), disk_path.canonicalize()) {
+        if resolved.starts_with(root) && resolved.is_file() {
+            if let Ok(bytes) = fs::read(&resolved) {
+                return serve_bytes(&bytes, clean_path);
+            }
         }
     }
 

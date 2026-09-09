@@ -96,3 +96,77 @@ fn test_stage2_validation() {
     });
     assert!(validate_stage2_json(&valid_hold, "").is_ok());
 }
+
+#[test]
+fn test_ultra_narrow_stop_loss_rejected() {
+    // Ultra-narrow stop loss: entry 80000, stop 79980 (distance 20, 0.025%)
+    let narrow_sl = serde_json::json!({
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做多",
+            "entry_price": 80000.0,
+            "stop_loss_price": 79980.0,
+            "take_profit_price": 80500.0,
+            "trade_confidence": 70
+        }
+    });
+    let res = validate_stage2_json(&narrow_sl, "");
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+    assert!(err.invalid_fields.iter().any(|f| f.contains("止损距离过窄")));
+}
+
+#[test]
+fn test_stage1_semantic_conflict_double_top_rejected() {
+    let st1 = serde_json::json!({
+        "cycle_position": "trading_range",
+        "dominant_force": "neutral",
+        "gate_result": "proceed",
+        "detected_patterns": ["double_top_candidate", "rejection_at_high"]
+    });
+
+    let st2_buy = serde_json::json!({
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做多",
+            "entry_price": 80000.0,
+            "stop_loss_price": 79500.0,
+            "take_profit_price": 81000.0,
+            "trade_confidence": 70
+        }
+    });
+
+    use okx_2pa_agent::ai::json_validator::validate_stage2_json_with_stage1;
+    let res = validate_stage2_json_with_stage1(&st2_buy, "", Some(&st1));
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+    assert!(err.invalid_fields.iter().any(|f| f.contains("双顶") || f.contains("高位受阻")));
+}
+
+#[test]
+fn test_stage1_strong_bear_knife_catching_rejected() {
+    let st1 = serde_json::json!({
+        "cycle_position": "overstretched_bearish",
+        "dominant_force": "bears",
+        "gate_result": "proceed",
+        "detected_patterns": ["bearish_spike", "strong_trend"]
+    });
+
+    let st2_buy = serde_json::json!({
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做多",
+            "entry_price": 79000.0,
+            "stop_loss_price": 78500.0,
+            "take_profit_price": 80000.0,
+            "trade_confidence": 70
+        }
+    });
+
+    use okx_2pa_agent::ai::json_validator::validate_stage2_json_with_stage1;
+    let res = validate_stage2_json_with_stage1(&st2_buy, "", Some(&st1));
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+    assert!(err.invalid_fields.iter().any(|f| f.contains("强空头单边下跌") || f.contains("盲目猜底")));
+}
+

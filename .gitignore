@@ -15,6 +15,8 @@
 
 # 本地环境变量与私密密钥（严禁提交）
 .env
+.web-auth-token
+config/.web-auth-token
 .env.*
 !.env.example
 config/settings.local.json
@@ -61,4 +63,3 @@ Desktop.ini
 # 宣传视频与多媒体制作物料（不推送到仓库）
 promo_video/
 promo_materials/
-

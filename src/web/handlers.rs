@@ -217,10 +217,10 @@ pub async fn handle_set_trading_system(
     State(service): State<AppState>,
     Json(req): Json<SetTradingSystemRequest>,
 ) -> Response {
-    let clean = req.trading_system.trim();
-    if !clean.is_empty() {
-        *service.current_trading_system.write() = clean.to_string();
-    }
+    let Some(clean) = crate::strategies::canonical(&req.trading_system) else {
+        return (axum::http::StatusCode::BAD_REQUEST, "未知交易系统").into_response();
+    };
+    *service.current_trading_system.write() = clean.to_string();
     Json(service.status()).into_response()
 }
 

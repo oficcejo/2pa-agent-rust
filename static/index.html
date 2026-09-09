@@ -59,9 +59,11 @@
         </label>
         <label>交易系统
           <select id="tradingSystemSelect">
-            <option value="2pa" selected>📊 2PA 价格行为</option>
-            <option value="dog_walking">🐕 遛狗系统 (SMA 14/170)</option>
-            <option value="adaptive">🧠 智能自适应双引擎</option>
+            <option value="2pa_trend" selected>📊 2PA 趋势确认</option>
+            <option value="dog_reversion">🐕 遛狗偏离回归</option>
+<option value="dog_trend">🐕 遛狗顺势回踩</option>
+            <option value="adaptive">🧠 自适应观察（不开新仓）</option>
+            <option value="alpha_pilot">⚡ AlphaPilot 量化因子</option>
           </select>
         </label>
         <button id="refreshButton" class="icon-button" title="刷新行情" aria-label="刷新行情">↻</button>
@@ -132,8 +134,9 @@
           <div><dt>入场</dt><dd id="entryPrice">—</dd></div>
           <div><dt>止损</dt><dd id="stopPrice">—</dd></div>
           <div><dt>目标一</dt><dd id="targetPrice">—</dd></div>
-          <div><dt>目标二</dt><dd id="target2Price">—</dd></div>
-          <div><dt>胜率估计</dt><dd id="winRate">—</dd></div>
+          <div><dt>目标二（仅参考）</dt><dd id="target2Price">—</dd></div>
+          <div><dt>历史胜率估计</dt><dd id="winRate">—</dd></div>
+          <div><dt>净盈亏比</dt><dd id="netRiskReward">—</dd></div>
         </dl>
         <section class="plain-section"><h2>判断依据</h2><p id="reasoning">尚无 AI 决策。</p></section>
         <section class="plain-section"><h2>执行结果</h2><pre id="executionResult">未提交订单</pre></section>
@@ -447,9 +450,11 @@
           <div class="form-grid">
             <label class="full-width">默认分析与交易系统
               <select id="cfgTradingSystem">
-                <option value="2pa" selected>📊 2PA 价格行为系统 (Al Brooks 经典八态)</option>
-                <option value="dog_walking">🐕 遛狗系统 (SMA 14/170 均线偏离与回归)</option>
-                <option value="adaptive">🧠 智能自适应双引擎 (2PA + 遛狗综合自适应)</option>
+                <option value="2pa_trend" selected>📊 2PA 趋势确认</option>
+                <option value="dog_reversion">🐕 遛狗偏离回归</option>
+<option value="dog_trend">🐕 遛狗顺势回踩</option>
+                <option value="adaptive">🧠 自适应观察（不开新仓）</option>
+                <option value="alpha_pilot">⚡ AlphaPilot 量化因子系统 (纯数学免 Token 策略)</option>
               </select>
             </label>
           </div>

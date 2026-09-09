@@ -2,12 +2,13 @@ use crate::ai::client::AIClient;
 use crate::ai::prompt_assembler::{build_stage1_prompt_for_system, build_stage2_prompt_for_system};
 use crate::config::settings::Settings;
 use crate::data::base::{KlineFrame, PositionContext};
+use crate::indicators::alpha_pilot::AlphaPilotEngine;
 use crate::orchestrator::validation_retry::{call_and_validate_stage1, call_and_validate_stage2};
 use crate::records::history::save_record;
 use crate::records::schema::{AnalysisRecord, RecordMeta};
 use crate::util::mask::mask_secret;
 use crate::util::timefmt::{now_local_iso, now_local_ms};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::path::PathBuf;
 use tracing::info;
@@ -57,15 +58,38 @@ impl TwoStageOrchestrator {
         pos_ctx: Option<&PositionContext>,
         htf_context: Option<&str>,
     ) -> Result<AnalysisRecord> {
+        self.run_analysis_with_market_context(frame, system, pos_ctx, htf_context, None).await
+    }
+
+    pub async fn run_analysis_with_market_context(
+        &self, frame: &KlineFrame, system: &str, pos_ctx: Option<&PositionContext>,
+        htf_context: Option<&str>, htf_frame: Option<&KlineFrame>,
+    ) -> Result<AnalysisRecord> {
+        let system = crate::strategies::canonical(system).ok_or_else(|| anyhow!("未知交易系统"))?;
+        if system == "alpha_pilot" {
+            info!("Executing Native AlphaPilot Quant Engine for {} ({}) without LLM calls...", frame.symbol, frame.timeframe);
+            let record = self.run_alpha_pilot_analysis(frame, pos_ctx)?;
+            let _ = save_record(&self.records_dir, &record);
+            return Ok(record);
+        }
+
         info!("Starting Stage 1 analysis for {} ({}) using system [{}]...", frame.symbol, frame.timeframe, system);
 
+        let hard_evidence = crate::strategies::diagnostics(system, frame, htf_frame);
+        let context = format!("{}\n程序候选证据（不得篡改）：{}", htf_context.unwrap_or(""), hard_evidence);
+        let htf_context = Some(context.as_str());
         let stage1_prompt = build_stage1_prompt_for_system(system, frame, self.prompt_dir.as_deref(), htf_context);
-        let (stage1_diagnosis, stage1_reply, stage1_messages) = call_and_validate_stage1(
+        let (mut stage1_diagnosis, stage1_reply, stage1_messages) = call_and_validate_stage1(
             &self.ai_client,
             &stage1_prompt,
             self.settings.validation.retry_max,
         ).await?;
 
+        stage1_diagnosis["program_candidates"] = hard_evidence;
+        if stage1_diagnosis["program_candidates"]["long"]["eligible"] != true
+            && stage1_diagnosis["program_candidates"]["short"]["eligible"] != true {
+            stage1_diagnosis["gate_result"] = serde_json::json!("wait");
+        }
         info!("Stage 1 diagnosis complete. Starting Stage 2 decision for system [{}]...", system);
 
         let (stage2_prompt, strategies_used, experiences_loaded) = build_stage2_prompt_for_system(
@@ -80,12 +104,14 @@ impl TwoStageOrchestrator {
             htf_context,
         );
 
-        let (stage2_decision, stage2_reply, stage2_messages) = call_and_validate_stage2(
+        let (mut stage2_decision, stage2_reply, stage2_messages) = call_and_validate_stage2(
             &self.ai_client,
             &stage2_prompt,
             self.settings.validation.retry_max,
+            Some(&stage1_diagnosis),
         ).await?;
 
+        crate::strategies::enforce(system, frame, htf_frame, &stage1_diagnosis, &mut stage2_decision, pos_ctx);
         info!("Stage 2 decision complete. Building AnalysisRecord...");
 
         let kline_json = serde_json::to_value(&frame.bars).unwrap_or(Value::Array(Vec::new()));
@@ -135,7 +161,7 @@ impl TwoStageOrchestrator {
                 trading_system: system.to_string(),
             },
             kline_data,
-            htf_text: String::new(),
+            htf_text: context,
             stage1_messages: stage1_msg_values,
             stage1_response: Some(serde_json::json!({
                 "content": stage1_reply.content,
@@ -166,5 +192,111 @@ impl TwoStageOrchestrator {
         let _ = save_record(&self.records_dir, &record);
         Ok(record)
     }
+
+    pub fn run_alpha_pilot_analysis(
+        &self,
+        frame: &KlineFrame,
+        pos_ctx: Option<&PositionContext>,
+    ) -> Result<AnalysisRecord> {
+        let alpha_res = AlphaPilotEngine::evaluate(&frame.bars)
+            .ok_or_else(|| anyhow!("AlphaPilot 因子评估失败：K 线数据不足"))?;
+
+        let kline_json = serde_json::to_value(&frame.bars).unwrap_or(Value::Array(Vec::new()));
+        let kline_data = match kline_json {
+            Value::Array(arr) => arr,
+            _ => Vec::new(),
+        };
+
+        let stage1_diagnosis = serde_json::json!({
+            "trading_system": "alpha_pilot",
+            "cycle_position": if alpha_res.supertrend_dir > 0.0 { "bullish_trend" } else { "bearish_trend" },
+            "alpha_raw_factor": alpha_res.raw_factor,
+            "alpha_z_score": alpha_res.z_score,
+            "alpha_target_position": alpha_res.target_position,
+            "rs_vol_norm": alpha_res.rs_vol_norm,
+            "is_vol_jump": alpha_res.is_vol_jump,
+            "supertrend_dir": alpha_res.supertrend_dir,
+            "supertrend_upper": alpha_res.supertrend_upper,
+            "supertrend_lower": alpha_res.supertrend_lower,
+            "diagnosis_summary": alpha_res.rationale,
+            "gate_result": if alpha_res.target_position.abs() > 0.05 { "proceed" } else { "wait" }
+        });
+
+        let (mut action, mut order_type) = match alpha_res.order_action.as_str() {
+            "OPEN" => ("OPEN", "市价单"),
+            "CLOSE_EARLY" => ("CLOSE_EARLY", "平仓"),
+            _ => ("WAIT", "不下单"),
+        };
+
+        if let Some(pos) = pos_ctx.filter(|p| p.has_position) {
+            let same_side = (pos.pos_side == "long" && alpha_res.target_position > 0.05)
+                || (pos.pos_side == "short" && alpha_res.target_position < -0.05);
+            (action, order_type) = if same_side { ("HOLD", "持有") } else { ("CLOSE_EARLY", "平仓") };
+        }
+
+        let stage2_decision = serde_json::json!({
+            "trading_system": "alpha_pilot",
+            "decision": {
+                "action": action,
+                "order_type": order_type,
+                "order_direction": alpha_res.order_direction,
+                "entry_price": alpha_res.entry_price,
+                "stop_loss_price": alpha_res.stop_loss_price,
+                "take_profit_price": alpha_res.take_profit_price,
+                "trade_confidence": (alpha_res.confidence * 100.0).round() as u32,
+                "confidence": (alpha_res.confidence * 100.0).round() as u32,
+                "target_position": alpha_res.target_position,
+                "position_scale": alpha_res.target_position.abs(),
+                "estimated_win_rate": null,
+                "estimated_win_rate_reasoning": "信号强度不是经历史成交校准的胜率",
+                "risk_reward_ratio": 2.0,
+                "reasoning": alpha_res.rationale,
+            },
+            "decision_trace": ["alpha_pilot_symbolic_evaluation", "neutral_band_stateless_filter"]
+        });
+
+        let pos_val = pos_ctx.and_then(|p| serde_json::to_value(p).ok());
+
+        Ok(AnalysisRecord {
+            meta: RecordMeta {
+                timestamp_local_iso: now_local_iso(),
+                timestamp_local_ms: now_local_ms(),
+                symbol: frame.symbol.clone(),
+                timeframe: frame.timeframe.clone(),
+                bar_count: frame.bars.len(),
+                ai_provider: serde_json::json!({
+                    "model": "AlphaPilot-Quant-V1",
+                    "base_url": "native://rust",
+                    "api_key": "None (Pure Quant)",
+                }),
+                decision_stance: self.settings.general.decision_stance.clone(),
+                trading_system: "alpha_pilot".to_string(),
+            },
+            kline_data,
+            htf_text: String::new(),
+            stage1_messages: Vec::new(),
+            stage1_response: Some(serde_json::json!({
+                "content": alpha_res.rationale.clone(),
+                "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+            })),
+            stage1_diagnosis: Some(stage1_diagnosis),
+            stage2_messages: Vec::new(),
+            stage2_response: Some(serde_json::json!({
+                "content": serde_json::to_string_pretty(&stage2_decision).unwrap_or_default(),
+                "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+            })),
+            stage2_decision: Some(stage2_decision),
+            strategy_files_used: vec!["best_ETH-USDT-SWAP_15m.json".to_string()],
+            experience_loaded: Vec::new(),
+            position_context: pos_val,
+            exception: None,
+            usage_total: serde_json::json!({
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }),
+        })
+    }
 }
+
 

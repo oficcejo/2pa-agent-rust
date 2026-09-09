@@ -7,7 +7,6 @@ use axum::Router;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tower_http::cors::CorsLayer;
 use tracing::info;
 
 pub fn create_router(service: Arc<WebTradingService>) -> Router {
@@ -30,11 +29,15 @@ pub fn create_router(service: Arc<WebTradingService>) -> Router {
         .route("/api/contract/specs", get(handle_contract_specs))
         .route("/api/trade/cancel", post(handle_cancel_order))
         .route("/api/trade/cancel_all", post(handle_cancel_all_orders))
-        .layer(CorsLayer::permissive())
+        .layer(axum::middleware::from_fn_with_state(service.clone(), crate::web::auth::authenticate))
         .with_state(service)
 }
 
-pub async fn run_server(host: &str, port: u16, settings: Settings) -> Result<()> {
+pub async fn run_server(host: &str, port: u16, mut settings: Settings) -> Result<()> {
+    if settings.web_auth_token.is_empty() {
+        settings.web_auth_token = crate::web::auth::load_or_create_token(std::path::Path::new("config/.web-auth-token"))?;
+        info!("Web 登录用户名 admin；口令保存在 config/.web-auth-token，远程访问请使用 HTTPS");
+    }
     let service = Arc::new(WebTradingService::new(settings.clone()));
 
     // Spawn background automation tick loop

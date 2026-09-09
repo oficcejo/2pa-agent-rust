@@ -17,7 +17,8 @@ pub struct ValidationError {
 }
 
 pub fn strip_markdown_fences(text: &str) -> String {
-    let t = text.trim();
+    let without_think = Regex::new(r"(?s)<think>.*?</think>").unwrap().replace_all(text, "");
+    let t = without_think.trim();
     if let Some(caps) = Regex::new(r"(?s)```(?:json)?\s*(.*?)\s*```").unwrap().captures(t) {
         if let Some(m) = caps.get(1) {
             return m.as_str().trim().to_string();
@@ -68,6 +69,26 @@ pub fn extract_outer_json_object(text: &str) -> String {
     stripped[start..].to_string()
 }
 
+fn repair_trailing_commas(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if quoted {
+            if escaped { escaped = false; }
+            else if c == '\\' { escaped = true; }
+            else if c == '"' { quoted = false; }
+        } else if c == '"' { quoted = true; }
+        else if c == ',' {
+            let next = chars.clone().find(|ch| !ch.is_whitespace());
+            if matches!(next, Some('}' | ']')) { continue; }
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub fn parse_and_clean_json(text: &str, stage: &str) -> Result<Value, ValidationError> {
     let raw = text.trim();
     if raw.is_empty() {
@@ -100,7 +121,7 @@ pub fn parse_and_clean_json(text: &str, stage: &str) -> Result<Value, Validation
         }
         Err(e) => {
             // Attempt simple trailing comma repair
-            let repaired = Regex::new(r",\s*([\]}])").unwrap().replace_all(&json_candidate, "$1");
+            let repaired = repair_trailing_commas(&json_candidate);
             if let Ok(v) = serde_json::from_str::<Value>(&repaired) {
                 if v.is_object() {
                     return Ok(v);
@@ -157,7 +178,7 @@ pub fn validate_stage1_json(val: &Value, raw_text: &str) -> Result<Value, Valida
     Ok(val.clone())
 }
 
-pub fn validate_stage2_json(val: &Value, raw_text: &str) -> Result<Value, ValidationError> {
+pub fn validate_stage2_json_with_stage1(val: &Value, raw_text: &str, stage1: Option<&Value>) -> Result<Value, ValidationError> {
     let mut missing = Vec::new();
     let mut invalid = Vec::new();
 
@@ -237,6 +258,63 @@ pub fn validate_stage2_json(val: &Value, raw_text: &str) -> Result<Value, Valida
                     } else if dir == "做空" && !(t < e && e < s) {
                         invalid.push("做空要求: 止盈价 < 入场价 < 止损价".to_string());
                     }
+
+                    // 1. 最低止损距离硬风控（防日内随机噪音被秒扫损）
+                    if e > 0.0 && s > 0.0 {
+                        let stop_dist = (e - s).abs();
+                        let stop_ratio = stop_dist / e;
+                        if stop_ratio < 0.0030 {
+                            invalid.push(format!(
+                                "止损距离过窄 (仅 {:.3}%, 约 {:.2} 点)，落入随机噪音区极易被扫损。止损必须保留足够结构缓冲 (建议 >= 1.0 ATR 或 >= 0.5%)",
+                                stop_ratio * 100.0, stop_dist
+                            ));
+                        }
+                    }
+
+                    // 2. 阶段一形态与阶段二决策冲突硬拦截 (Semantic Anti-Conflict)
+                    // Versioned strategies validate raw market evidence in the orchestrator.
+                    // Legacy pattern-name heuristics conflict with confirmed reversal setups.
+                    if let Some(st1) = stage1.filter(|s| s.get("program_candidates").is_none()) {
+                        let patterns: Vec<String> = st1.get("detected_patterns")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_lowercase())).collect())
+                            .unwrap_or_default();
+                        let pat_set: std::collections::HashSet<_> = patterns.into_iter().collect();
+                        let dominant = st1.get("dominant_force").and_then(|v| v.as_str()).unwrap_or("");
+                        let cycle = st1.get("cycle_position").and_then(|v| v.as_str()).unwrap_or("");
+
+                        if dir == "做多" {
+                            if pat_set.contains("double_top_candidate") || pat_set.contains("rejection_at_high") {
+                                invalid.push("阶段一已诊断出高位受阻 (rejection_at_high) 或双顶 (double_top_candidate)，阶段二严禁在高位做多，必须保持观望或寻找做空机会".to_string());
+                            }
+
+                            if dominant.eq_ignore_ascii_case("bears") && (cycle.contains("overstretched_bearish") || cycle.contains("spike")) {
+                                let has_reversal = pat_set.contains("double_bottom") 
+                                    || pat_set.contains("double_bottom_candidate")
+                                    || pat_set.contains("h2") 
+                                    || pat_set.contains("break_above_sma14")
+                                    || pat_set.contains("exhaustion");
+                                if !has_reversal {
+                                    invalid.push("市场处于强空头单边下跌趋势 (bears) 且无明确底部反转形态确认时，严禁左侧逆势盲目猜底做多".to_string());
+                                }
+                            }
+                        } else if dir == "做空" {
+                            if pat_set.contains("double_bottom_candidate") || pat_set.contains("rejection_at_low") {
+                                invalid.push("阶段一已诊断出低位受阻 (rejection_at_low) 或双底 (double_bottom_candidate)，阶段二严禁在低位做空，必须保持观望或寻找做多机会".to_string());
+                            }
+
+                            if dominant.eq_ignore_ascii_case("bulls") && (cycle.contains("overstretched_bullish") || cycle.contains("spike")) {
+                                let has_reversal = pat_set.contains("double_top") 
+                                    || pat_set.contains("double_top_candidate")
+                                    || pat_set.contains("l2") 
+                                    || pat_set.contains("break_below_sma14")
+                                    || pat_set.contains("exhaustion");
+                                if !has_reversal {
+                                    invalid.push("市场处于强多头单边上涨趋势 (bulls) 且无明确顶部反转形态确认时，严禁左侧逆势盲目摸顶做空".to_string());
+                                }
+                            }
+                        }
+                    }
                 }
                 _ => {
                     invalid.push("下单状态必须填写有效的 entry_price, stop_loss_price, take_profit_price".to_string());
@@ -258,4 +336,8 @@ pub fn validate_stage2_json(val: &Value, raw_text: &str) -> Result<Value, Valida
     }
 
     Ok(val.clone())
+}
+
+pub fn validate_stage2_json(val: &Value, raw_text: &str) -> Result<Value, ValidationError> {
+    validate_stage2_json_with_stage1(val, raw_text, None)
 }

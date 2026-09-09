@@ -1,4 +1,6 @@
 pub mod handlers;
+pub mod auth;
+pub mod positions;
 pub mod server;
 pub mod service;
 pub mod sessions;

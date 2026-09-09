@@ -101,7 +101,7 @@ fn test_dog_walking_prompts() {
     };
 
     let p1 = build_stage1_prompt_for_system("dog_walking", &frame, None, None);
-    assert!(p1.contains("遛狗系统"));
+    assert!(p1.contains("dog_reversion"));
     assert!(p1.contains("SMA14"));
     assert!(p1.contains("SMA170"));
 
@@ -111,8 +111,8 @@ fn test_dog_walking_prompts() {
         "gate_result": "proceed"
     });
     let (p2, strat, _) = build_stage2_prompt_for_system("dog_walking", &frame, &diag, "balanced", false, None, None, None, None);
-    assert!(p2.contains("遛狗系统"));
-    assert_eq!(strat, vec!["遛狗系统_交易决策策略.txt"]);
+    assert!(p2.contains("dog_reversion"));
+    assert_eq!(strat, vec!["strategy_v1.txt"]);
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn test_adaptive_system_prompts() {
 
     let htf_info = "HTF 1H: 偏多 (Bullish, 位于 1H EMA20 之上)";
     let p1 = build_stage1_prompt_for_system("adaptive", &frame, None, Some(htf_info));
-    assert!(p1.contains("自适应"));
+    assert!(p1.contains("adaptive"));
     assert!(p1.contains("高时间框架"));
 
     let diag = json!({
@@ -154,7 +154,7 @@ fn test_adaptive_system_prompts() {
         "gate_result": "proceed"
     });
     let (p2, strat, _) = build_stage2_prompt_for_system("adaptive", &frame, &diag, "aggressive", false, None, None, None, Some(htf_info));
-    assert!(p2.contains("自适应"));
-    assert_eq!(strat, vec!["遛狗系统_交易决策策略.txt"]);
+    assert!(p2.contains("adaptive"));
+    assert_eq!(strat, vec!["strategy_v1.txt"]);
 }
 

@@ -27,7 +27,7 @@ pub fn compute_indicators(bars: &[KlineBar]) -> IndicatorBundle {
         if !s170.is_nan() && s170.abs() > 1e-6 {
             dev170_pct_asc.push((closes[i] - s170) / s170 * 100.0);
         } else {
-            dev170_pct_asc.push(0.0);
+            dev170_pct_asc.push(f64::NAN);
         }
     }
 

@@ -205,12 +205,27 @@ impl OKXClient {
         bar: &str,
         limit: usize,
     ) -> Result<Vec<Vec<String>>> {
+        self.get_candles_with_cursor(inst_id, bar, limit, None).await
+    }
+
+    pub async fn get_candles_with_cursor(
+        &self,
+        inst_id: &str,
+        bar: &str,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Vec<Vec<String>>> {
         let limit_str = limit.min(300).to_string();
-        let params = [
+        let mut params = vec![
             ("instId", inst_id),
             ("bar", bar),
-            ("limit", &limit_str),
+            ("limit", limit_str.as_str()),
         ];
+        if let Some(a) = after {
+            if !a.is_empty() {
+                params.push(("after", a));
+            }
+        }
         let data = self.request(reqwest::Method::GET, "/api/v5/market/candles", Some(&params), None, false).await?;
 
         let mut candles = Vec::with_capacity(data.len());
@@ -225,6 +240,72 @@ impl OKXClient {
         }
         Ok(candles)
     }
+
+    pub async fn get_candles_paginated(
+        &self,
+        inst_id: &str,
+        bar: &str,
+        total: usize,
+        only_confirmed: bool,
+    ) -> Result<Vec<Vec<String>>> {
+        use std::collections::BTreeMap;
+        let mut collected: BTreeMap<i64, Vec<String>> = BTreeMap::new();
+        let mut after: Option<String> = None;
+        let max_pages = (total / 100 + 4).max(2);
+
+        for _ in 0..max_pages {
+            let batch_limit = 300.min((total.saturating_sub(collected.len())).max(50));
+            let batch = match self.get_candles_with_cursor(inst_id, bar, batch_limit, after.as_deref()).await {
+                Ok(b) => b,
+                Err(e) => {
+                    if !collected.is_empty() {
+                        break;
+                    }
+                    return Err(e);
+                }
+            };
+            if batch.is_empty() {
+                break;
+            }
+
+            let mut oldest_ts = i64::MAX;
+            for c in batch {
+                if c.is_empty() { continue; }
+                let ts = c[0].parse::<i64>().unwrap_or(0);
+                if ts < oldest_ts {
+                    oldest_ts = ts;
+                }
+                // confirm: '0' = forming (in-progress), '1' = closed
+                if only_confirmed && c.len() > 8 && c[8] == "0" {
+                    continue;
+                }
+                collected.insert(ts, c);
+            }
+
+            if oldest_ts == i64::MAX {
+                break;
+            }
+
+            let oldest_str = oldest_ts.to_string();
+            if let Some(ref a) = after {
+                if oldest_str.as_str() >= a.as_str() {
+                    break;
+                }
+            }
+            after = Some(oldest_str);
+
+            if collected.len() >= total {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        }
+
+        // BTreeMap is sorted by ts ascending. Reverse to descending (newest first) to match OKX convention.
+        let mut result: Vec<Vec<String>> = collected.into_values().collect();
+        result.reverse();
+        Ok(result)
+    }
+
 
     pub async fn get_account_balance(&self) -> Result<Vec<Value>> {
         self.request(reqwest::Method::GET, "/api/v5/account/balance", None, None, true).await
@@ -287,19 +368,28 @@ impl OKXClient {
     }
 
     pub async fn set_leverage(&self, inst_id: &str, leverage: &str, margin_mode: &str) -> Result<Value> {
-        let payload = serde_json::json!({
+        self.set_leverage_for_side(inst_id, leverage, margin_mode, None).await
+    }
+
+    pub async fn set_leverage_for_side(&self, inst_id: &str, leverage: &str, margin_mode: &str, pos_side: Option<&str>) -> Result<Value> {
+        let mut payload = serde_json::json!({
             "instId": inst_id,
             "lever": leverage,
             "mgnMode": margin_mode,
         });
+        if let Some(side) = pos_side { payload["posSide"] = serde_json::json!(side); }
         let data = self.request(reqwest::Method::POST, "/api/v5/account/set-leverage", None, Some(&payload), true).await?;
-        Ok(data.into_iter().next().unwrap_or_default())
+        let result = data.into_iter().next().ok_or_else(|| anyhow!("杠杆设置返回空结果"))?;
+        if let Some(code) = result["sCode"].as_str() {
+            if code != "0" { return Err(anyhow!("杠杆设置失败: {}", code)); }
+        }
+        Ok(result)
     }
 
     pub async fn place_order(&self, payload: &Value) -> Result<Value> {
         let data = self.request(reqwest::Method::POST, "/api/v5/trade/order", None, Some(payload), true).await?;
-        let result = data.into_iter().next().unwrap_or_default();
-        let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
+        let result = data.into_iter().next().ok_or_else(|| anyhow!("OKX 返回空的交易结果，状态未确认"))?;
+        let s_code = result.get("sCode").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("OKX 交易结果缺少 sCode，状态未确认"))?;
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("OKX rejected order");
             let err_text = format_okx_trade_error("1", "All operations failed", s_code, s_msg);
@@ -310,8 +400,8 @@ impl OKXClient {
 
     pub async fn place_algo_order(&self, payload: &Value) -> Result<Value> {
         let data = self.request(reqwest::Method::POST, "/api/v5/trade/order-algo", None, Some(payload), true).await?;
-        let result = data.into_iter().next().unwrap_or_default();
-        let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
+        let result = data.into_iter().next().ok_or_else(|| anyhow!("OKX 返回空的交易结果，状态未确认"))?;
+        let s_code = result.get("sCode").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("OKX 交易结果缺少 sCode，状态未确认"))?;
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("OKX rejected algo order");
             let err_text = format_okx_trade_error("1", "All operations failed", s_code, s_msg);
@@ -329,8 +419,8 @@ impl OKXClient {
             if !cid.is_empty() { payload["clOrdId"] = serde_json::json!(cid); }
         }
         let data = self.request(reqwest::Method::POST, "/api/v5/trade/cancel-order", None, Some(&payload), true).await?;
-        let result = data.into_iter().next().unwrap_or_default();
-        let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
+        let result = data.into_iter().next().ok_or_else(|| anyhow!("OKX 返回空的交易结果，状态未确认"))?;
+        let s_code = result.get("sCode").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("OKX 交易结果缺少 sCode，状态未确认"))?;
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("Cancel rejected");
             return Err(anyhow!("OKX cancel failed [{}]: {}", s_code, s_msg));
@@ -344,8 +434,8 @@ impl OKXClient {
             "algoId": algo_id,
         }]);
         let data = self.request(reqwest::Method::POST, "/api/v5/trade/cancel-algos", None, Some(&payload), true).await?;
-        let result = data.into_iter().next().unwrap_or_default();
-        let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
+        let result = data.into_iter().next().ok_or_else(|| anyhow!("OKX 返回空的交易结果，状态未确认"))?;
+        let s_code = result.get("sCode").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("OKX 交易结果缺少 sCode，状态未确认"))?;
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("Cancel algo rejected");
             return Err(anyhow!("OKX cancel algo failed [{}]: {}", s_code, s_msg));
@@ -364,7 +454,9 @@ impl OKXClient {
             }
         }
         let data = self.request(reqwest::Method::POST, "/api/v5/trade/close-position", None, Some(&payload), true).await?;
-        let result = data.into_iter().next().unwrap_or_default();
+        let result = data.into_iter().next().ok_or_else(|| anyhow!("OKX 返回空的交易结果，状态未确认"))?;
+        // close-position can return instId/posSide without a per-item sCode.
+        anyhow::ensure!(result.get("sCode").is_some() || result["instId"].as_str() == Some(inst_id), "OKX 平仓响应缺少产品信息");
         let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("Close position rejected");
@@ -387,8 +479,8 @@ impl OKXClient {
             payload["newTpOrdPx"] = serde_json::json!("-1");
         }
         let data = self.request(reqwest::Method::POST, "/api/v5/trade/amend-algos", None, Some(&payload), true).await?;
-        let result = data.into_iter().next().unwrap_or_default();
-        let s_code = result.get("sCode").and_then(|v| v.as_str()).unwrap_or("0");
+        let result = data.into_iter().next().ok_or_else(|| anyhow!("OKX 返回空的交易结果，状态未确认"))?;
+        let s_code = result.get("sCode").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("OKX 交易结果缺少 sCode，状态未确认"))?;
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("Amend algo rejected");
             return Err(anyhow!("OKX amend algo failed [{}]: {}", s_code, s_msg));
@@ -419,4 +511,3 @@ pub fn format_okx_trade_error(code: &str, msg: &str, s_code: &str, s_msg: &str) 
         format!("OKX 接口错误 [{}]: {}", code, msg)
     }
 }
-

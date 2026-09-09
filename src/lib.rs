@@ -7,3 +7,5 @@ pub mod orchestrator;
 pub mod records;
 pub mod util;
 pub mod web;
+
+pub mod strategies;

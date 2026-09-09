@@ -5,5 +5,12 @@ target/
 *.exe
 *.log
 tmp/
+.tmp/
+.env
+.env.*
+**/.web-auth-token
+config/secret.key
+records/
+reports/
 .idea/
 .vscode/

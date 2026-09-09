@@ -28,31 +28,34 @@ fn mk_bar(seq: usize, ts_open: i64, close: f64) -> KlineBar {
 
 #[tokio::test]
 async fn test_path_traversal_static_files() {
-    let service = Arc::new(WebTradingService::new(Settings::default()));
+    let service = Arc::new(WebTradingService::new(Settings { web_auth_token: "test-password".into(), ..Default::default() }));
     let app = create_router(service);
 
     let req = axum::http::Request::builder()
         .uri("/static/%2e%2e%2fCargo.toml")
+        .header("Authorization", "Bearer test-password")
         .body(axum::body::Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     println!("encoded ../Cargo.toml -> {}", resp.status());
-    assert_eq!(resp.status(), 200, "path traversal: escaped static dir");
+    assert_eq!(resp.status(), 404, "path traversal must be rejected");
 
-    let service2 = Arc::new(WebTradingService::new(Settings::default()));
+    let service2 = Arc::new(WebTradingService::new(Settings { web_auth_token: "test-password".into(), ..Default::default() }));
     let app2 = create_router(service2);
     let req2 = axum::http::Request::builder()
         .uri("/static/%2e%2e%2f.env")
+        .header("Authorization", "Bearer test-password")
         .body(axum::body::Body::empty())
         .unwrap();
     let resp2 = app2.oneshot(req2).await.unwrap();
     println!("encoded ../.env -> {}", resp2.status());
-    assert_eq!(resp2.status(), 200, ".env secrets readable via traversal");
+    assert_eq!(resp2.status(), 404, "private files must not be served");
 
-    let service3 = Arc::new(WebTradingService::new(Settings::default()));
+    let service3 = Arc::new(WebTradingService::new(Settings { web_auth_token: "test-password".into(), ..Default::default() }));
     let app3 = create_router(service3);
     let req3 = axum::http::Request::builder()
         .uri("/static/app.js")
+        .header("Authorization", "Bearer test-password")
         .body(axum::body::Body::empty())
         .unwrap();
     let resp3 = app3.oneshot(req3).await.unwrap();
@@ -60,7 +63,7 @@ async fn test_path_traversal_static_files() {
 }
 
 #[test]
-fn test_warmup_insufficient_produces_zero_dev_pct() {
+fn test_warmup_insufficient_produces_missing_dev_pct() {
     let n_total = 175;
     let n_request = 50;
     let mut bars = Vec::new();
@@ -79,21 +82,18 @@ fn test_warmup_insufficient_produces_zero_dev_pct() {
         frame.indicators.sma170[idx].is_nan(),
         "SMA170 is NaN without full warmup"
     );
-    assert_eq!(
-        frame.indicators.dev170_pct[idx], 0.0,
-        "deviation silently reported as 0.00% instead of missing"
-    );
+    assert!(frame.indicators.dev170_pct[idx].is_nan(), "missing deviation must not be reported as zero");
 }
 
 #[test]
-fn test_invalid_timezone_fails_open() {
+fn test_invalid_timezone_fails_closed() {
     let session = build_trading_session("custom", "Not/ARealZone", "09:00", "10:00", Some(&[0]));
     let monday_utc = chrono::DateTime::parse_from_rfc3339("2026-08-24T23:30:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
     let open = session.is_open_at(Some(monday_utc));
     println!("invalid tz, configured window 09:00-10:00, actual local ~23:30 -> open={}", open);
-    assert!(open, "fail-open: trades outside configured window");
+    assert!(!open, "invalid timezone must block trading");
 }
 
 #[test]
@@ -136,20 +136,12 @@ fn test_indicators_incremental_matches_full() {
 }
 
 #[test]
-fn test_json_repair_corrupts_string_content() {
+fn test_json_repair_preserves_string_content() {
     let raw = "{\"a\":\"p,}q\",\"b\":1,}";
     let extracted = extract_outer_json_object(raw);
     let parsed = parse_and_clean_json(&extracted, "stage2");
-    match parsed {
-        Ok(v) => {
-            let a = v.get("a").and_then(|x| x.as_str()).unwrap_or("");
-            println!("repaired a = {:?}", a);
-            assert_ne!(a, "p,}q", "string content altered by comma repair");
-        }
-        Err(e) => {
-            println!("not repaired, error: {}", e.message);
-        }
-    }
+    let value = parsed.expect("trailing comma can be repaired");
+    assert_eq!(value["a"], "p,}q", "string contents must survive repair");
 }
 
 #[test]

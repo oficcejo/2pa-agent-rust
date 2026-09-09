@@ -31,7 +31,7 @@ impl TradingSession {
         let utc_now = moment.unwrap_or_else(Utc::now);
         let tz: Tz = match Tz::from_str(&self.timezone_name) {
             Ok(t) => t,
-            Err(_) => return true,
+            Err(_) => return false,
         };
         let local = utc_now.with_timezone(&tz);
         let weekday_num = local.weekday().num_days_from_monday();
