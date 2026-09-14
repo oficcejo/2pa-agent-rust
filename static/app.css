@@ -145,6 +145,8 @@
 .small-action{height:30px;padding:0 10px;border:1px solid #3c6257;border-radius:4px;background:#17231f;color:var(--green);font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap}
 .small-action:hover{border-color:var(--green);background:#1a2b25}
 .small-action:disabled{opacity:.5;cursor:wait}
+.learning-actions{display:flex;gap:6px;flex:0 0 auto}
+.session-state.inactive{border-color:#4a4a4a;color:var(--muted)!important}
 
 @media(max-width:600px){
   .history-section{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}

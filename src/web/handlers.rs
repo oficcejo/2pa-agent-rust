@@ -257,3 +257,71 @@ pub async fn handle_cancel_all_orders(
     }
 }
 
+// ---- Continual-learning loop ----------------------------------------------
+
+pub async fn handle_learning_report(State(service): State<AppState>) -> Response {
+    Json(service.learning_report()).into_response()
+}
+
+/// Run one reconciliation pass on demand.
+pub async fn handle_learning_reconcile(State(service): State<AppState>) -> Response {
+    match service.reconcile_outcomes().await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+pub async fn handle_learning_outcomes(
+    State(service): State<AppState>,
+    Query(query): Query<LimitQuery>,
+) -> Response {
+    let records = service.outcome_records(query.limit);
+    Json(serde_json::to_value(records).unwrap_or(Value::Array(Vec::new()))).into_response()
+}
+
+pub async fn handle_prompt_versions(State(service): State<AppState>) -> Response {
+    Json(service.prompt_versions()).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PublishPromptRequest {
+    pub content: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Publish a candidate strategy prompt. Never activates it.
+pub async fn handle_publish_prompt(
+    State(service): State<AppState>,
+    Json(req): Json<PublishPromptRequest>,
+) -> Response {
+    match service.publish_prompt_candidate(&req.content, &req.note) {
+        Ok(data) => Json(data).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActivatePromptRequest {
+    pub version: String,
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub async fn handle_activate_prompt(
+    State(service): State<AppState>,
+    Json(req): Json<ActivatePromptRequest>,
+) -> Response {
+    match service.activate_prompt_version(&req.version, req.force) {
+        Ok(data) => Json(data).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+pub async fn handle_rollback_prompt(State(service): State<AppState>) -> Response {
+    match service.rollback_prompt_version() {
+        Ok(data) => Json(data).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+

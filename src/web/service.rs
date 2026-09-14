@@ -2,20 +2,45 @@ use crate::config::paths::{records_dir, settings_json_path};
 use crate::config::settings::Settings;
 use crate::data::base::{KlineBar, PositionContext};
 use crate::data::snapshot::{build_analysis_frame, build_live_frame, INDICATOR_WARMUP_BARS};
+use crate::learning::{
+    compare_candidate, group_by_prompt_version, metrics_for, ExperienceWriter, OutcomeStore,
+    PromptArtifactStore, Reconciler, STRATEGY_PROMPT_NAME,
+};
 use crate::okx::client::{OKXClient, OKXCredentials};
 use crate::okx::trading::{AuditEntry, OKXTradeExecutor, BROKER_TAG};
 use crate::orchestrator::two_stage::TwoStageOrchestrator;
 use crate::records::history::{delete_record, list_record_paths, load_record};
 use crate::util::mask::mask_secret;
 use crate::web::sessions::{build_trading_session, TradingSession};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{Timelike, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AutomationRuntime {
+    pub phase: String,
+    pub message: String,
+    pub last_tick_ms: Option<i64>,
+    pub last_attempt_ms: Option<i64>,
+    pub last_success_ms: Option<i64>,
+    pub last_error: Option<String>,
+    pub consecutive_failures: u32,
+    pub next_retry_ms: Option<i64>,
+}
+
+/// Observability for the continual-learning loop.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LearningRuntime {
+    pub last_reconcile_ms: Option<i64>,
+    pub last_report: Option<Value>,
+    pub last_error: Option<String>,
+    pub reconcile_runs: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveEnvRequest {
@@ -71,6 +96,24 @@ fn default_leverage() -> f64 { 3.0 }
 fn default_trade_mode() -> String { "cross".to_string() }
 fn default_position_mode() -> String { "net".to_string() }
 
+/// Stamp a decision with its receipt linkage before execution.
+///
+/// Without this the audit row cannot be attributed to a decision or a prompt
+/// revision, and the outcome reconciler has nothing to join on.
+fn stamp_receipt(decision: &mut Value, record: &crate::records::schema::AnalysisRecord) {
+    decision["decision_record_id"] = serde_json::json!(record.meta.record_id);
+    decision["prompt_version"] = serde_json::json!(record.meta.prompt_version);
+    decision["prompt_hash"] = serde_json::json!(record.meta.prompt_hash);
+    if let Some(diag) = record.stage1_diagnosis.as_ref() {
+        if let Some(cycle) = diag.get("cycle_position") {
+            decision["cycle_position"] = cycle.clone();
+        }
+        if let Some(patterns) = diag.get("detected_patterns") {
+            decision["detected_patterns"] = patterns.clone();
+        }
+    }
+}
+
 pub struct WebTradingService {
     pub settings: Arc<RwLock<Settings>>,
     pub okx_client: Arc<RwLock<OKXClient>>,
@@ -85,6 +128,12 @@ pub struct WebTradingService {
     pub last_closed_ts: Arc<RwLock<HashMap<(String, String), i64>>>,
     pub equity_history: Arc<RwLock<Vec<Value>>>,
     pub operation_lock: Arc<tokio::sync::Mutex<()>>,
+    pub automation_runtime: Arc<RwLock<AutomationRuntime>>,
+    automation_tick_lock: tokio::sync::Mutex<()>,
+    pub outcome_store: OutcomeStore,
+    pub experience_writer: ExperienceWriter,
+    pub prompt_store: PromptArtifactStore,
+    pub learning_runtime: Arc<RwLock<LearningRuntime>>,
 }
 
 impl WebTradingService {
@@ -152,6 +201,12 @@ impl WebTradingService {
             last_closed_ts: Arc::new(RwLock::new(HashMap::new())),
             equity_history: Arc::new(RwLock::new(Vec::new())),
             operation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            automation_runtime: Arc::new(RwLock::new(AutomationRuntime::default())),
+            automation_tick_lock: tokio::sync::Mutex::new(()),
+            outcome_store: OutcomeStore::new(crate::config::paths::outcomes_dir()),
+            experience_writer: ExperienceWriter::new(crate::config::paths::experience_dir()),
+            prompt_store: PromptArtifactStore::new(crate::config::paths::prompt_artifacts_dir()),
+            learning_runtime: Arc::new(RwLock::new(LearningRuntime::default())),
         }
     }
 
@@ -211,6 +266,7 @@ impl WebTradingService {
             "block_new_entries_when_position_open": settings.okx.block_new_entries_when_position_open,
             "max_pending_bars": settings.okx.max_pending_bars,
             "automation_session": session.as_dict(Some(Utc::now())),
+            "automation_runtime": self.automation_runtime.read().clone(),
             "automation_session_presets": crate::web::sessions::session_preset_options(),
             "latest": latest,
         })
@@ -646,7 +702,11 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
                 let take_profit_price_2 = inner_dec.and_then(|d| d.get("take_profit_price_2")).and_then(|v| v.as_f64());
                 let estimated_win_rate = inner_dec.and_then(|d| d.get("estimated_win_rate")).and_then(|v| v.as_f64());
                 let reasoning = inner_dec.and_then(|d| d.get("reasoning")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let exception_str = r.exception.as_ref().map(|e| e.to_string());
+                let exception_str = r.exception.as_ref().and_then(|e| {
+                    e.get("message").and_then(|v| v.as_str()).map(|s| s.to_string())
+                        .or_else(|| e.as_str().map(|s| s.to_string()))
+                        .or_else(|| Some(e.to_string()))
+                });
 
                 let item = serde_json::json!({
                     "id": stem,
@@ -688,6 +748,164 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         self.executor.read().delete_audit_entry(record_id)
     }
 
+    // ---- Continual-learning loop -------------------------------------------
+
+    /// Resolve submitted orders into structured outcomes, then promote the
+    /// qualified ones into the experience library.
+    pub async fn reconcile_outcomes(&self) -> Result<Value> {
+        let learning = self.settings.read().learning.clone();
+        anyhow::ensure!(learning.enabled, "学习闭环未启用（将 LEARNING_ENABLED 设为 true 开启）");
+
+        let entries = self.executor.read().audit_history(500);
+        let reconciler = Reconciler::new(
+            self.okx_client.read().clone(),
+            self.outcome_store.clone(),
+            self.experience_writer.clone(),
+        );
+        let report = reconciler
+            .reconcile(
+                &entries,
+                &learning.qualification_policy(),
+                learning.max_hold_bars,
+                learning.lookback_hours.max(1) * 3_600_000,
+                learning.write_experience,
+            )
+            .await;
+
+        let value = serde_json::to_value(&report).unwrap_or(Value::Null);
+        let mut runtime = self.learning_runtime.write();
+        runtime.last_reconcile_ms = Some(Utc::now().timestamp_millis());
+        runtime.last_report = Some(value.clone());
+        runtime.reconcile_runs = runtime.reconcile_runs.saturating_add(1);
+        runtime.last_error = if report.errors.is_empty() { None } else { Some(report.errors.join("; ")) };
+        Ok(value)
+    }
+
+    pub fn outcome_records(&self, limit: usize) -> Vec<crate::learning::TradeOutcome> {
+        self.outcome_store.list(limit)
+    }
+
+    /// Aggregate view: loop state, realised metrics and per-version verdicts.
+    pub fn learning_report(&self) -> Value {
+        let learning = self.settings.read().learning.clone();
+        let outcomes = self.outcome_store.list(1000);
+        let policy = learning.evaluation_policy();
+        let active = crate::ai::prompt_assembler::resolve_strategy_prompt(Some(
+            &crate::config::paths::prompt_dir(),
+        ));
+        let grouped = group_by_prompt_version(&outcomes);
+        let verdicts = crate::learning::evaluate_versions(&outcomes, &active.version, &policy);
+
+        let versions: Vec<Value> = grouped
+            .iter()
+            .map(|(version, samples)| {
+                serde_json::json!({
+                    "version": version,
+                    "metrics": metrics_for(samples),
+                    "verdict": verdicts.get(version),
+                })
+            })
+            .collect();
+
+        serde_json::json!({
+            "enabled": learning.enabled,
+            "read_experience": learning.read_experience,
+            "write_experience": learning.write_experience,
+            "active_prompt": {
+                "version": active.version,
+                "hash": active.hash,
+                "source": active.source,
+            },
+            "outcomes": {
+                "total": outcomes.len(),
+                "filled": outcomes.iter().filter(|o| o.filled).count(),
+                "qualified": outcomes.iter().filter(|o| o.qualified).count(),
+            },
+            "overall": metrics_for(&outcomes),
+            "versions": versions,
+            "experience": self.experience_writer.stats(),
+            "policy": {
+                "min_hold_bars": learning.min_hold_bars,
+                "max_abs_r": learning.max_abs_r,
+                "max_hold_bars": learning.max_hold_bars,
+                "lookback_hours": learning.lookback_hours,
+                "eval_min_samples": learning.eval_min_samples,
+                "eval_min_expectancy_delta_r": learning.eval_min_expectancy_delta_r,
+                "eval_max_win_rate_drop": learning.eval_max_win_rate_drop,
+            },
+            "runtime": *self.learning_runtime.read(),
+        })
+    }
+
+    pub fn prompt_versions(&self) -> Value {
+        let _ = self.prompt_store.ensure_seeded(
+            STRATEGY_PROMPT_NAME,
+            crate::ai::prompt_assembler::STRATEGY_PROMPT_FALLBACK,
+        );
+        let index = self.prompt_store.index(STRATEGY_PROMPT_NAME);
+        serde_json::json!({
+            "active": index.active,
+            "versions": index.versions.values().collect::<Vec<_>>(),
+        })
+    }
+
+    /// Publish a prompt revision as an inactive candidate.
+    ///
+    /// Publishing never changes live behaviour; activation is a separate step.
+    pub fn publish_prompt_candidate(&self, content: &str, note: &str) -> Result<Value> {
+        let trimmed = content.trim();
+        anyhow::ensure!(!trimmed.is_empty(), "候选 prompt 不能为空");
+        anyhow::ensure!(trimmed.len() >= 200, "候选 prompt 过短（至少 200 字符），疑似误提交");
+        let version = self.prompt_store.publish(STRATEGY_PROMPT_NAME, content, note)?;
+        Ok(serde_json::json!({
+            "published": version,
+            "active": self.prompt_store.index(STRATEGY_PROMPT_NAME).active,
+            "note": "候选已发布但未激活，需通过选择性发布校验",
+        }))
+    }
+
+    /// Activate a published revision, gated by the selective-publication policy.
+    ///
+    /// `force` bypasses the statistical gate for a revision that has no samples
+    /// yet — a freshly published candidate cannot have any. The bypass is
+    /// reported in the response rather than hidden.
+    pub fn activate_prompt_version(&self, version: &str, force: bool) -> Result<Value> {
+        let learning = self.settings.read().learning.clone();
+        let mut verdict = Value::Null;
+
+        if learning.enabled && !force {
+            let outcomes = self.outcome_store.list(1000);
+            let active_version = self.prompt_store.index(STRATEGY_PROMPT_NAME).active;
+            let grouped = group_by_prompt_version(&outcomes);
+            let baseline = metrics_for(grouped.get(&active_version).map(|v| v.as_slice()).unwrap_or(&[]));
+            let candidate = metrics_for(grouped.get(version).map(|v| v.as_slice()).unwrap_or(&[]));
+            let result = compare_candidate(&candidate, &baseline, &learning.evaluation_policy());
+            let accepts = result.accepted;
+            verdict = serde_json::to_value(&result).unwrap_or(Value::Null);
+            anyhow::ensure!(
+                accepts,
+                "候选版本未通过选择性发布：{}（确认无误可用 force=true 跳过统计校验）",
+                result.reasons.join("；")
+            );
+        }
+
+        let active = self.prompt_store.activate(STRATEGY_PROMPT_NAME, version)?;
+        Ok(serde_json::json!({
+            "active": active.version,
+            "hash": active.hash,
+            "forced": force,
+            "verdict": verdict,
+        }))
+    }
+
+    pub fn rollback_prompt_version(&self) -> Result<Value> {
+        let active = self
+            .prompt_store
+            .rollback(STRATEGY_PROMPT_NAME)?
+            .ok_or_else(|| anyhow!("已是最早版本，无法回退"))?;
+        Ok(serde_json::json!({ "active": active.version, "hash": active.hash }))
+    }
+
     pub async fn analyze(
         &self,
         inst_id: &str,
@@ -717,7 +935,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         } else {
             (bar_count + INDICATOR_WARMUP_BARS + 20).max(100)
         };
-        let raw_bars = self.fetch_raw_candles(inst_id, timeframe, fetch_limit).await?;
+        let raw_bars = self.fetch_raw_candles(inst_id, timeframe, fetch_limit).await.context("读取分析行情失败")?;
         let frame_bars = if is_alpha {
             raw_bars.len().saturating_sub(1).min(800).max(bar_count)
         } else {
@@ -731,14 +949,14 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         let position_mode = self.settings.read().okx.position_mode.clone();
         let configured = self.settings.read().is_okx_configured();
         let pos_ctx = if configured {
-            crate::web::positions::read_position(&client, inst_id, &position_mode).await?
+            crate::web::positions::read_position(&client, inst_id, &position_mode).await.context("读取账户持仓失败")?
         } else { PositionContext { symbol: inst_id.into(), pos_side: "none".into(), pos_size: "0".into(), ..Default::default() } };
 
         // 2. 获取高时间框架 (HTF) 宏观共振背景
         let htf_tf = if timeframe == "1m" || timeframe == "3m" || timeframe == "5m" || timeframe == "15m" {
-            Some("1h")
+            Some("1H")
         } else if timeframe == "30m" || timeframe == "1h" {
-            Some("4h")
+            Some("4H")
         } else {
             None
         };
@@ -791,15 +1009,18 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
                     if let Some(atr) = frame.indicators.atr14.first().filter(|a| a.is_finite() && **a > 0.0) {
                         decision["atr14"] = serde_json::json!(atr);
                     }
+                    stamp_receipt(&mut decision, &record);
                     // Quant strength is not a calibrated directional veto for the LLM strategy.
                     let result = executor.execute(inst_id, timeframe, timestamp, &decision).await;
                     execution_res = serde_json::to_value(result)?;
                 } else if ["平仓","修改止损","修改止盈","修改止盈止损"].contains(&order_type)
                     || ["CLOSE_EARLY","MOVE_STOP_LOSS","MOVE_TAKE_PROFIT","TRAILING_TAKE_PROFIT","MOVE_SL_TP"].contains(&action) {
-                    let result = crate::web::positions::execute_management(&client, inst_id, &position_mode, dec).await;
+                    let mut stamped = dec.clone();
+                    stamp_receipt(&mut stamped, &record);
+                    let result = crate::web::positions::execute_management(&client, inst_id, &position_mode, &stamped).await;
                     let execution = crate::okx::trading::ExecutionResult {
                         submitted: result.is_ok(),
-                        signal_id: OKXTradeExecutor::generate_signal_id(inst_id,timeframe,timestamp,dec),
+                        signal_id: OKXTradeExecutor::generate_signal_id(inst_id,timeframe,timestamp,&stamped),
                         request: serde_json::json!({"instId": inst_id, "action": action, "ordType": order_type}),
                         response: result.as_ref().ok().cloned(),
                         reason: result.err().map(|e| e.to_string()).unwrap_or_else(|| "持仓管理请求已提交".into()),
@@ -850,6 +1071,73 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
     }
 
     pub async fn automation_tick(&self) -> Result<()> {
+        let Ok(_tick_guard) = self.automation_tick_lock.try_lock() else { return Ok(()); };
+        let now = Utc::now().timestamp_millis();
+        self.automation_runtime.write().last_tick_ms = Some(now);
+        if !*self.automation_enabled.read() {
+            self.set_automation_phase("disabled", "自动交易未启用");
+            return Ok(());
+        }
+        if self.automation_runtime.read().next_retry_ms.is_some_and(|t| now < t) {
+            return Ok(());
+        }
+        let result = self.run_automation_tick().await;
+        if let Err(error) = &result {
+            let mut message = format!("{error:#}");
+            {
+                let settings = self.settings.read();
+                for secret in [&settings.provider.api_key, &settings.okx.api_key,
+                    &settings.okx.secret_key, &settings.okx.passphrase, &settings.web_auth_token] {
+                    if !secret.is_empty() { message = message.replace(secret, "[redacted]"); }
+                }
+            }
+            message = message.chars().take(2000).collect();
+            {
+                let mut runtime = self.automation_runtime.write();
+                runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
+                let delay = (30_000_i64 * (1_i64 << runtime.consecutive_failures.min(4).saturating_sub(1))).min(300_000);
+                runtime.phase = "error".into();
+                runtime.message = "自动运行失败，稍后重试；本次未完成决策".into();
+                runtime.last_error = Some(message.clone());
+                runtime.next_retry_ms = Some(Utc::now().timestamp_millis() + delay);
+            }
+            let record = crate::records::schema::AnalysisRecord {
+                meta: crate::records::schema::RecordMeta {
+                    timestamp_local_iso: crate::util::timefmt::now_local_iso(),
+                    timestamp_local_ms: crate::util::timefmt::now_local_ms(),
+                    symbol: self.automation_symbol.read().clone(),
+                    timeframe: self.automation_timeframe.read().clone(),
+                    bar_count: 0,
+                    ai_provider: Value::Null,
+                    decision_stance: self.settings.read().general.decision_stance.clone(),
+                    trading_system: self.current_trading_system.read().clone(),
+                    record_id: uuid::Uuid::new_v4().simple().to_string(),
+                    prompt_version: String::new(),
+                    prompt_hash: String::new(),
+                },
+                kline_data: vec![], htf_text: String::new(),
+                stage1_messages: vec![], stage1_response: None, stage1_diagnosis: None,
+                stage2_messages: vec![], stage2_response: None, stage2_decision: None,
+                strategy_files_used: vec![], experience_loaded: vec![], position_context: None,
+                exception: Some(serde_json::json!({"stage":"automation", "message":message})),
+                usage_total: Value::Null,
+            };
+            let dir = self.orchestrator.read().records_dir.clone();
+            if let Err(save_error) = crate::records::history::save_record(&dir, &record) {
+                warn!("Failed to save automation failure record: {}", save_error);
+                self.automation_runtime.write().last_error = Some(format!("{}；错误记录也无法保存：{}", message, save_error));
+            }
+        }
+        result
+    }
+
+    fn set_automation_phase(&self, phase: &str, message: &str) {
+        let mut runtime = self.automation_runtime.write();
+        runtime.phase = phase.into();
+        runtime.message = message.into();
+    }
+
+    async fn run_automation_tick(&self) -> Result<()> {
         let auto_enabled = *self.automation_enabled.read();
         let session = self.automation_session.read().clone();
         if !auto_enabled { return Ok(()); }
@@ -859,34 +1147,49 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         let timeframe = self.automation_timeframe.read().clone();
 
         {
+            self.set_automation_phase("checking_orders", "检查并清理到期入场挂单");
             let _guard = self.operation_lock.lock().await;
             let executor = self.executor.read().clone();
-            executor.cancel_expired_entries(&symbol, &timeframe).await?;
+            executor.cancel_expired_entries(&symbol, &timeframe).await.context("检查或清理到期挂单失败")?;
         }
-        if !session.is_open_at(Some(Utc::now())) { return Ok(()); }
-        let raw = match self.fetch_raw_candles(&symbol, &timeframe, 3).await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!("Automation tick failed to fetch candles: {}", e);
-                return Ok(());
-            }
-        };
+        if !session.is_open_at(Some(Utc::now())) {
+            self.set_automation_phase("outside_session", "当前不在交易时段，等待时段开放");
+            return Ok(());
+        }
+        self.set_automation_phase("checking_candles", "检查最新收盘 K 线");
+        let raw = self.fetch_raw_candles(&symbol, &timeframe, 3).await.context("读取最新行情失败")?;
 
         if let Some(closed) = raw.iter().find(|b| b.closed) {
             let key = (symbol.clone(), timeframe.clone());
             let last_ts = self.last_closed_ts.read().get(&key).copied().unwrap_or(0);
             if last_ts == closed.ts_open {
+                self.set_automation_phase("waiting_bar", "本根 K 线已完成分析，等待下一根收盘");
                 return Ok(());
             }
 
-            self.last_closed_ts.write().insert(key, closed.ts_open);
             info!("New closed bar detected on {} ({}), triggering analysis...", symbol, timeframe);
 
             let bar_count = self.settings.read().general.analysis_bar_count;
             let system = self.current_trading_system.read().clone();
-            if let Err(e) = self.analyze(&symbol, &timeframe, bar_count, true, Some(&system)).await {
-                error!("Automation analysis error: {}", e);
-            }
+            self.set_automation_phase("analyzing", "正在分析行情并生成决策");
+            self.automation_runtime.write().last_attempt_ms = Some(Utc::now().timestamp_millis());
+            let output = self.analyze(&symbol, &timeframe, bar_count, true, Some(&system)).await?;
+            // Failed analysis must not consume this bar. Execution results (including
+            // uncertain submissions) are returned normally and must never be retried.
+            self.last_closed_ts.write().insert(key, closed.ts_open);
+            let mut runtime = self.automation_runtime.write();
+            runtime.phase = "waiting_bar".into();
+            runtime.message = if output["execution"].is_null() {
+                "决策已保存，本次观望或持有，没有提交交易；等待下一根收盘".into()
+            } else {
+                format!("决策已保存；执行结果：{}", output["execution"]["reason"].as_str().unwrap_or("请查看交易记录"))
+            };
+            runtime.last_success_ms = Some(Utc::now().timestamp_millis());
+            runtime.last_error = None;
+            runtime.consecutive_failures = 0;
+            runtime.next_retry_ms = None;
+        } else {
+            anyhow::bail!("行情接口没有返回已收盘 K 线");
         }
         Ok(())
     }

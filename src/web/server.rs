@@ -29,6 +29,13 @@ pub fn create_router(service: Arc<WebTradingService>) -> Router {
         .route("/api/contract/specs", get(handle_contract_specs))
         .route("/api/trade/cancel", post(handle_cancel_order))
         .route("/api/trade/cancel_all", post(handle_cancel_all_orders))
+        .route("/api/learning/report", get(handle_learning_report))
+        .route("/api/learning/reconcile", post(handle_learning_reconcile))
+        .route("/api/learning/outcomes", get(handle_learning_outcomes))
+        .route("/api/learning/prompts", get(handle_prompt_versions))
+        .route("/api/learning/prompts/publish", post(handle_publish_prompt))
+        .route("/api/learning/prompts/activate", post(handle_activate_prompt))
+        .route("/api/learning/prompts/rollback", post(handle_rollback_prompt))
         .layer(axum::middleware::from_fn_with_state(service.clone(), crate::web::auth::authenticate))
         .with_state(service)
 }
@@ -52,6 +59,22 @@ pub async fn run_server(host: &str, port: u16, mut settings: Settings) -> Result
             }
         }
     });
+
+    // Spawn the outcome reconciliation loop when the learning layer is on.
+    if settings.learning.enabled {
+        let interval_secs = settings.learning.reconcile_interval_seconds.max(10);
+        let learn_service = Arc::clone(&service);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+            loop {
+                interval.tick().await;
+                if let Err(e) = learn_service.reconcile_outcomes().await {
+                    tracing::warn!("Learning reconciliation error: {}", e);
+                }
+            }
+        });
+        info!("持续学习闭环已启用：每 {} 秒对账一次交易结果", interval_secs);
+    }
 
     let app = create_router(service);
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;

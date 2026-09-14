@@ -1,5 +1,8 @@
 use crate::ai::client::AIClient;
-use crate::ai::prompt_assembler::{build_stage1_prompt_for_system, build_stage2_prompt_for_system};
+use crate::ai::prompt_assembler::{
+    build_stage1_prompt_for_system, build_stage2_prompt_with_strategy, resolve_strategy_prompt,
+    Stage2PromptRequest,
+};
 use crate::config::settings::Settings;
 use crate::data::base::{KlineFrame, PositionContext};
 use crate::indicators::alpha_pilot::AlphaPilotEngine;
@@ -8,7 +11,7 @@ use crate::records::history::save_record;
 use crate::records::schema::{AnalysisRecord, RecordMeta};
 use crate::util::mask::mask_secret;
 use crate::util::timefmt::{now_local_iso, now_local_ms};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::path::PathBuf;
 use tracing::info;
@@ -42,6 +45,17 @@ impl TwoStageOrchestrator {
         }
     }
 
+    /// Experience injection is opt-in and gated by the master switch, so
+    /// enabling reconciliation alone never changes what the model sees.
+    pub fn experience_max_entries(&self) -> usize {
+        let learning = &self.settings.learning;
+        if !learning.enabled || !learning.read_experience {
+            0
+        } else {
+            learning.experience_max_entries
+        }
+    }
+
     pub async fn run_analysis(&self, frame: &KlineFrame) -> Result<AnalysisRecord> {
         let system = self.settings.general.trading_system.clone();
         self.run_analysis_with_system_and_pos(frame, &system, None, None).await
@@ -69,11 +83,16 @@ impl TwoStageOrchestrator {
         if system == "alpha_pilot" {
             info!("Executing Native AlphaPilot Quant Engine for {} ({}) without LLM calls...", frame.symbol, frame.timeframe);
             let record = self.run_alpha_pilot_analysis(frame, pos_ctx)?;
-            let _ = save_record(&self.records_dir, &record);
+            save_record(&self.records_dir, &record).context("保存决策记录失败，停止执行")?;
             return Ok(record);
         }
 
         info!("Starting Stage 1 analysis for {} ({}) using system [{}]...", frame.symbol, frame.timeframe, system);
+
+        // One stable id per decision; the reconciler uses it to attach the
+        // eventual outcome to the analysis that caused it.
+        let record_id = uuid::Uuid::new_v4().simple().to_string();
+        let strategy_prompt = resolve_strategy_prompt(self.prompt_dir.as_deref());
 
         let hard_evidence = crate::strategies::diagnostics(system, frame, htf_frame);
         let context = format!("{}\n程序候选证据（不得篡改）：{}", htf_context.unwrap_or(""), hard_evidence);
@@ -83,7 +102,7 @@ impl TwoStageOrchestrator {
             &self.ai_client,
             &stage1_prompt,
             self.settings.validation.retry_max,
-        ).await?;
+        ).await.context("第一阶段市场分析失败")?;
 
         stage1_diagnosis["program_candidates"] = hard_evidence;
         if stage1_diagnosis["program_candidates"]["long"]["eligible"] != true
@@ -92,16 +111,18 @@ impl TwoStageOrchestrator {
         }
         info!("Stage 1 diagnosis complete. Starting Stage 2 decision for system [{}]...", system);
 
-        let (stage2_prompt, strategies_used, experiences_loaded) = build_stage2_prompt_for_system(
-            system,
-            frame,
-            &stage1_diagnosis,
-            &self.settings.general.decision_stance,
-            self.settings.prompt.stage2_load_full_strategy_library,
-            self.prompt_dir.as_deref(),
-            self.experience_dir.as_deref(),
-            pos_ctx,
-            htf_context,
+        let (stage2_prompt, strategies_used, experiences_loaded) = build_stage2_prompt_with_strategy(
+            &Stage2PromptRequest {
+                system,
+                frame,
+                stage1_diagnosis: &stage1_diagnosis,
+                decision_stance: &self.settings.general.decision_stance,
+                strategy_prompt: &strategy_prompt.content,
+                experience_dir: self.experience_dir.as_deref(),
+                experience_max_entries: self.experience_max_entries(),
+                position_context: pos_ctx,
+                htf_context,
+            },
         );
 
         let (mut stage2_decision, stage2_reply, stage2_messages) = call_and_validate_stage2(
@@ -109,7 +130,7 @@ impl TwoStageOrchestrator {
             &stage2_prompt,
             self.settings.validation.retry_max,
             Some(&stage1_diagnosis),
-        ).await?;
+        ).await.context("第二阶段交易决策失败")?;
 
         crate::strategies::enforce(system, frame, htf_frame, &stage1_diagnosis, &mut stage2_decision, pos_ctx);
         info!("Stage 2 decision complete. Building AnalysisRecord...");
@@ -159,6 +180,9 @@ impl TwoStageOrchestrator {
                 }),
                 decision_stance: self.settings.general.decision_stance.clone(),
                 trading_system: system.to_string(),
+                record_id: record_id.clone(),
+                prompt_version: strategy_prompt.version.clone(),
+                prompt_hash: strategy_prompt.hash.clone(),
             },
             kline_data,
             htf_text: context,
@@ -189,7 +213,7 @@ impl TwoStageOrchestrator {
             }),
         };
 
-        let _ = save_record(&self.records_dir, &record);
+        save_record(&self.records_dir, &record).context("保存决策记录失败，停止执行")?;
         Ok(record)
     }
 
@@ -271,6 +295,9 @@ impl TwoStageOrchestrator {
                 }),
                 decision_stance: self.settings.general.decision_stance.clone(),
                 trading_system: "alpha_pilot".to_string(),
+                record_id: uuid::Uuid::new_v4().simple().to_string(),
+                prompt_version: "native".to_string(),
+                prompt_hash: String::new(),
             },
             kline_data,
             htf_text: String::new(),

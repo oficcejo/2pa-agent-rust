@@ -121,6 +121,7 @@
         <button data-tab="account">账户</button>
         <button data-tab="contract">📐 合约换算</button>
         <button data-tab="automation" class="tab-highlight">🤖 自动交易</button>
+        <button data-tab="learning">🧠 持续学习</button>
       </nav>
 
       <div id="decisionTab" class="tab-content active">
@@ -429,6 +430,70 @@
           <div id="tradeHistoryState" class="history-state">正在读取记录</div>
           <div id="tradeHistory" class="history-list"></div>
         </section>
+      </div>
+
+      <div id="learningTab" class="tab-content">
+        <div class="section-title">
+          <div>
+            <h2>🧠 持续学习闭环</h2>
+            <span class="sub-label">决策回执 → 成交对账 → 结构化反馈 → 经验库 → 版本发布校验</span>
+          </div>
+          <button id="learningRefresh" class="icon-button" type="button" title="刷新学习面板" aria-label="刷新学习面板">↻</button>
+        </div>
+
+        <div id="learningState" class="empty-state">正在读取学习状态</div>
+
+        <div id="learningDashboard" hidden>
+          <section class="risk-summary">
+            <div><small>已结算结果</small><b id="learningOutcomeTotal">—</b></div>
+            <div><small>合格样本</small><b id="learningQualified">—</b></div>
+            <div><small>期望 R</small><b id="learningExpectancy">—</b></div>
+            <div><small>胜率</small><b id="learningWinRate">—</b></div>
+          </section>
+
+          <section class="session-section">
+            <div class="session-head">
+              <div><h2>当前策略提示词版本</h2><span id="learningPromptHint">—</span></div>
+              <span id="learningEnabledBadge" class="session-state">已关闭</span>
+            </div>
+            <div class="spec-meta-grid">
+              <div><small>版本</small><b id="learningPromptVersion">—</b></div>
+              <div><small>来源</small><b id="learningPromptSource">—</b></div>
+              <div><small>内容哈希</small><b id="learningPromptHash">—</b></div>
+              <div><small>经验注入</small><b id="learningReadExperience">—</b></div>
+            </div>
+            <div class="session-foot">
+              <span id="learningRuntimeNote">—</span>
+              <div class="learning-actions">
+                <button id="learningReconcile" class="small-action" type="button">立即对账</button>
+                <button id="learningRollback" class="small-action" type="button">回退上一版本</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="history-section">
+            <div class="history-head">
+              <div><h2>提示词版本对比</h2><span id="learningVersionCount">0 个</span></div>
+            </div>
+            <div id="learningVersions" class="history-list"></div>
+          </section>
+
+          <section class="history-section">
+            <div class="history-head">
+              <div><h2>最近结算结果</h2><span id="learningOutcomeCount">0 条</span></div>
+            </div>
+            <div id="learningOutcomes" class="history-list"></div>
+          </section>
+
+          <section class="history-section">
+            <div class="history-head">
+              <div><h2>经验库</h2><span id="learningExperienceCount">0 类</span></div>
+            </div>
+            <div id="learningExperience" class="history-list"></div>
+          </section>
+        </div>
+
+        <p class="notice">学习闭环默认关闭。开启后程序会定期把已提交订单与交易所成交结果对账，生成结构化反馈（R 倍数、MFE/MAE、持仓时长、费用）并写入经验库。策略提示词以带版本的 artifact 管理，候选版本须通过选择性发布校验才能启用；程序不会自动把新策略投入实盘，盈亏标注为「模型估算」时表示由价格与仓位推导，并非交易所对账数据。</p>
       </div>
     </aside>
   </main>

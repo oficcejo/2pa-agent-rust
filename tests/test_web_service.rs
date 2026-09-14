@@ -92,3 +92,106 @@ async fn test_alpha_pilot_orchestrator_zero_token_execution() {
     std::fs::remove_dir(&test_dir).unwrap();
 }
 
+mod support;
+
+fn candle_row(ts: i64, closed: bool) -> serde_json::Value {
+    serde_json::json!([
+        ts.to_string(), "100", "101", "99", "100.5", "10", "0", "0",
+        if closed { "1" } else { "0" }
+    ])
+}
+
+fn closed_bar_ts() -> i64 {
+    let now = chrono::Utc::now().timestamp_millis();
+    now - (now % 900_000) - 900_000
+}
+
+async fn automation_service(okx_url: &str, llm_url: Option<&str>) -> (okx_2pa_agent::web::service::WebTradingService, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("2pa-auto-{}", uuid::Uuid::new_v4()));
+    let records = dir.join("records");
+    std::fs::create_dir_all(&records).unwrap();
+    let mut settings = Settings::default();
+    settings.okx.base_url = okx_url.to_string();
+    settings.okx.api_key = "test".into();
+    settings.okx.secret_key = "test".into();
+    settings.okx.passphrase = "test".into();
+    settings.okx.demo_trading = true;
+    settings.okx.auto_trading_enabled = true;
+    settings.general.trading_system = "2pa_trend".into();
+    settings.general.analysis_bar_count = 20;
+    if let Some(url) = llm_url {
+        settings.provider.base_url = url.to_string();
+        settings.provider.api_key = "test".into();
+        settings.validation.retry_max = 0;
+    }
+    let service = WebTradingService::new(settings);
+    *service.automation_enabled.write() = true;
+    *service.automation_symbol.write() = "TEST-USDT-SWAP".into();
+    *service.automation_timeframe.write() = "15m".into();
+    *service.orchestrator.write() = okx_2pa_agent::orchestrator::two_stage::TwoStageOrchestrator::new(
+        service.settings.read().clone(),
+        records,
+    );
+    (service, dir)
+}
+
+#[tokio::test]
+async fn automation_llm_failure_is_recorded_and_does_not_consume_the_bar() {
+    let mut routes = support::routes();
+    let ts = closed_bar_ts();
+    let mut candle_rows = vec![candle_row(ts + 900_000, false)];
+    candle_rows.extend((0..25).map(|i| candle_row(ts - i * 900_000, true)));
+    routes.insert("/api/v5/market/candles".into(), support::ok(serde_json::Value::Array(candle_rows)));
+    let mock = support::Mock::start(routes).await;
+    let llm = support::Mock::start(std::collections::HashMap::from([(
+        "/v1/chat/completions".into(),
+        serde_json::json!({"_http_status":403, "error":{"code":"forbidden","message":"model MiniMax-M3.0 is not allowed in your plan"}}),
+    )])).await;
+    let (service, _dir) = automation_service(&mock.url, Some(&llm.url)).await;
+    let first = service.automation_tick().await;
+    assert!(first.is_err(), "{first:?}");
+    let status = service.status();
+    assert_eq!(status["automation_runtime"]["phase"], "error");
+    let err = status["automation_runtime"]["last_error"].as_str().unwrap_or("");
+    assert!(err.contains("forbidden") || err.contains("LLM"), "{err}");
+    let saved: Vec<_> = std::fs::read_dir(_dir.join("records")).unwrap().filter_map(|e| e.ok()).collect();
+    assert_eq!(saved.len(), 1);
+    assert!(service.last_closed_ts.read().is_empty());
+    let calls_before = llm.calls.lock().unwrap().len();
+    service.automation_tick().await.unwrap();
+    assert_eq!(llm.calls.lock().unwrap().len(), calls_before, "backoff must suppress repeated LLM calls");
+    service.automation_runtime.write().next_retry_ms = None;
+    let second = service.automation_tick().await;
+    assert!(second.is_err());
+    let saved: Vec<_> = std::fs::read_dir(_dir.join("records")).unwrap().filter_map(|e| e.ok()).collect();
+    assert_eq!(saved.len(), 2);
+
+    // Recover on the same bar with a valid WAIT decision. A completed bar must
+    // not call the model again or create an exchange order on the next tick.
+    let reply = serde_json::json!({
+        "cycle_position":"trading_range", "dominant_force":"balanced", "gate_result":"wait",
+        "decision":{"action":"WAIT", "order_type":"不下单", "order_direction":"不下单", "trade_confidence":0}
+    });
+    let healthy_llm = support::Mock::start(std::collections::HashMap::from([(
+        "/v1/chat/completions".into(),
+        serde_json::json!({"choices":[{"message":{"content":reply.to_string()}}]})
+    )])).await;
+    let mut settings = service.settings.read().clone();
+    settings.provider.base_url = healthy_llm.url.clone();
+    *service.orchestrator.write() = okx_2pa_agent::orchestrator::two_stage::TwoStageOrchestrator::new(
+        settings, _dir.join("records")
+    );
+    service.automation_runtime.write().next_retry_ms = None;
+    service.automation_tick().await.unwrap();
+    assert_eq!(service.last_closed_ts.read().get(&("TEST-USDT-SWAP".into(), "15m".into())), Some(&ts));
+    assert!(service.status()["automation_runtime"]["last_error"].is_null());
+    assert!(service.status()["automation_runtime"]["last_success_ms"].is_number());
+    assert_eq!(healthy_llm.calls.lock().unwrap().len(), 2);
+    service.automation_tick().await.unwrap();
+    assert_eq!(healthy_llm.calls.lock().unwrap().len(), 2);
+    assert!(mock.calls.lock().unwrap().iter().all(|(method, _, _)| method == "GET"));
+    assert!(mock.calls.lock().unwrap().iter().any(|(_, path, _)| path.contains("bar=1H")),
+        "OKX rejects lowercase hourly candle parameters");
+    let _ = std::fs::remove_dir_all(_dir);
+}
+

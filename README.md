@@ -1,12 +1,34 @@
 # OKX 2PA Agent
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Release](https://img.shields.io/badge/Release-v0.4.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.4.0)
+[![Release](https://img.shields.io/badge/Release-v0.5.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.5.0)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-基于 Rust、Axum 和 Tokio 的 OKX 交易研究与执行工具，支持 LLM 两阶段分析、原生 AlphaPilot 因子、Web 控制台及自动交易时段。模型负责解释和提出方案，程序根据已收盘行情、结构、成本和账户额度决定是否允许执行。
+基于 Rust、Axum 和 Tokio 的 OKX 交易研究与执行工具，支持 LLM 两阶段分析、原生 AlphaPilot 因子、Web 控制台、自动交易时段，以及默认关闭的自进化闭环。模型负责解释和提出方案，程序根据已收盘行情、结构、成本和账户额度决定是否允许执行。
 
-当前版本 **v0.4.0**，策略协议 **2026-09-v1**。规则阈值是研究基线，测试通过不代表策略已经实现盈利。
+当前版本 **v0.5.0**，策略协议 **2026-09-v1**。规则阈值是研究基线，测试通过不代表策略已经实现盈利。
+
+## 自进化
+
+程序会观察自己每一笔已提交订单的**真实结局**，把结果沉淀为结构化经验，并让策略提示词的改动**先证明不劣于当前版本**才能生效。整条链路可审计、可回滚，**默认关闭**。
+
+- **可归因** —— 每笔结果都能追回到哪次决策、哪个提示词版本、哪个市场形态；`signal_id` 既是去重键也是回执键。
+- **可验证** —— 改提示词不再凭感觉，而是比较各版本在**真实成交结果**上的期望 R、胜率与盈亏比。
+- **可回滚** —— 提示词是带版本的 artifact，发布与激活分离，可一键回退。
+- **有边界** —— 不训练权重、不自动热切换上线、不把估算盈亏当成对账数据。
+
+配置项、资格判定与操作步骤见下文《自进化（持续学习闭环）》。
+
+## v0.5.0 更新与升级说明
+
+- 新增**自进化闭环**（`src/learning/`）：以 `signal_id` 为回执对账交易所成交结果，生成结构化反馈（R 倍数、MFE/MAE、持仓 K 线数、费用、出场原因），并自动写入经验库。
+- 策略提示词改为**带版本的 artifact**（`prompt_engineering/artifacts/`）：发布与激活分离、支持回滚，改阈值不再需要重新编译，每条决策可追溯到确切的提示词版本与哈希。
+- 新增**选择性发布校验**：候选提示词版本须在真实成交结果上不劣于当前版本才可激活；样本不足时明确拒绝结论，不给乐观默认值。
+- 修复**经验库读取链路**：此前 `ExperienceReader` 从未被调用，经验库实际处于失效状态；现已接入阶段二提示词装配。
+- 修复**品种下拉菜单**：SPOT 与 SWAP 请求相互隔离并各带一次重试，单个市场偶发失败不再清空整个列表；同时修复状态接口失败导致启动链中断的问题。
+- 新增「🧠 持续学习」Web 面板与 7 个学习接口；测试由 66 项增加到 128 项。
+
+**升级要点**：自进化闭环**默认关闭**，`LEARNING_ENABLED=false` 时行为与 v0.4.0 一致。首次运行会在 `prompt_engineering/artifacts/` 播种提示词 `v1`（该目录已被 Git 忽略，属运行态）。旧 `experience/` 经验库默认仍不注入提示词。
 
 ## v0.4.0 更新与升级说明
 
@@ -50,7 +72,7 @@ API 支持 HTTP Basic 和 `Authorization: Bearer <WEB_AUTH_TOKEN>`。例如 `cur
 
 ### 下载运行
 
-从 [Releases](https://github.com/oficcejo/2pa-agent-rust/releases) 下载产物。v0.4.0 提供 Windows x64 程序及 SHA-256 校验文件；Linux/macOS 可从源码编译。
+从 [Releases](https://github.com/oficcejo/2pa-agent-rust/releases) 下载产物。v0.5.0 提供 Windows x64 程序及 SHA-256 校验文件；Linux/macOS 可从源码编译。
 
 在独立目录运行 `okx-2pa-agent.exe`，打开 <http://127.0.0.1:8088/>，取得密码并登录。在「系统配置」填写兼容 OpenAI 的模型接口和 OKX 凭据。首次缺少配置时程序会尝试打开浏览器；保存后写入运行目录 `.env` 并更新内存配置。
 
@@ -69,6 +91,9 @@ OKX_PASSPHRASE=
 OKX_DEMO_TRADING=true
 OKX_AUTO_TRADING_ENABLED=false
 OKX_LIVE_TRADING_ACKNOWLEDGED=false
+LEARNING_ENABLED=false
+LEARNING_READ_EXPERIENCE=false
+LEARNING_WRITE_EXPERIENCE=true
 ```
 
 先在模拟盘验证。配置凭据不等于开启交易，仍须在 Web 自动交易面板启用；实盘还需要明确配置实盘确认条件。
@@ -80,7 +105,7 @@ OKX_LIVE_TRADING_ACKNOWLEDGED=false
 ```bash
 git clone https://github.com/oficcejo/2pa-agent-rust.git
 cd 2pa-agent-rust
-git checkout v0.4.0
+git checkout v0.5.0
 cargo build --release --locked
 ```
 
@@ -95,7 +120,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-Compose 持久化 `/app/.env`、`/app/config`、`/app/records`，监听主机 8088 端口。保留 `config` 挂载才能保留自动生成的登录密码。v0.4.0 未单独验证 Linux/Docker 构建。
+Compose 持久化 `/app/.env`、`/app/config`、`/app/records`，监听主机 8088 端口。保留 `config` 挂载才能保留自动生成的登录密码。Linux/Docker 构建未单独验证。
 
 ## 策略选择
 
@@ -123,7 +148,55 @@ Compose 持久化 `/app/.env`、`/app/config`、`/app/records`，监听主机 80
 
 不合格提案转为 WAIT/HOLD，原提案和理由存入 `rejected_proposal`、`program_validation`。新记录保存策略 ID、版本及证据；模型信心度不等于实测胜率。
 
-完整规则见 [策略协议](prompt_engineering/strategy_v1.txt) 和 [改造说明](reports/2026-09-09-strategy-upgrade.md)。协议编译嵌入程序，修改后须重新构建。旧策略文档及经验库保留用于研究，不再加载到当前三个策略的提示词中。
+完整规则见 [策略协议](prompt_engineering/strategy_v1.txt) 和 [改造说明](reports/2026-09-09-strategy-upgrade.md)。协议以带版本的 artifact 管理（`prompt_engineering/artifacts/strategy_v1/`），首次运行时自动以内置副本播种 `v1`；内置副本仅作回退，运行中读取 artifact。旧策略文档及经验库保留用于研究，**默认不加载**到当前三个策略的提示词中。
+
+## 自进化（持续学习闭环）
+
+借鉴 [reef](https://github.com/Human-Agent-Society/reef) 的 Serve → Observe → Grow → Commit 四步循环，把「决策 → 成交 → 结果 → 经验 → 版本」接成闭环：
+
+| 环节 | 实现 |
+|---|---|
+| Serve | 已有：分析产生决策，执行器提交订单并写入 `records/trade_audit.jsonl` |
+| Observe | `src/learning/`：以 `signal_id` 为回执，对账交易所成交状态，生成结构化结果（R 倍数、MFE/MAE、持仓 K 线数、费用、出场原因），存入 `records/outcomes/` |
+| Grow | 合格结果自动写入经验库 `experience/<周期>/{success,failure}_cases/`，取代手工维护的用例文件 |
+| Commit | 策略提示词版本化为 artifact；候选版本须先发布、再经选择性发布校验后才可显式激活 |
+
+**默认关闭**。`LEARNING_ENABLED=false` 时不对账、不写经验；`LEARNING_READ_EXPERIENCE=false` 时经验库不会注入提示词——开启对账不会悄悄改变模型看到的内容。
+
+```ini
+LEARNING_ENABLED=false                 # 总开关：交易结果对账 + 经验入库
+LEARNING_READ_EXPERIENCE=false         # 是否把经验库注入阶段二提示词
+LEARNING_WRITE_EXPERIENCE=true         # 是否把合格结果写入经验库
+LEARNING_RECONCILE_INTERVAL_SECONDS=60
+LEARNING_MAX_HOLD_BARS=96              # 超过该 K 线数仍未触发的交易按到期结算
+```
+
+资格判定（默认）：必须真实成交、初始风险大于零、持仓不少于 1 根 K 线、|R| 不超过 25。未成交订单仍会留存结果，但不会进经验库。
+
+### 如何开启与操作
+
+1. 设 `LEARNING_ENABLED=true` 并重启。**先保持 `LEARNING_READ_EXPERIENCE=false`**，只做观察，不改变模型输入。
+2. 在模拟盘正常交易。每笔成交后程序按 `LEARNING_RECONCILE_INTERVAL_SECONDS` 自动对账；也可在「🧠 持续学习」面板点「立即对账」。
+3. 检查面板：「当前策略提示词版本」应显示 `v1` / 来源「版本化 artifact」；「最近结算结果」应显示 R 倍数、MFE/MAE、持仓根数，并标注「盈亏=模型估算」。
+4. 合格样本会出现在「经验库」计数中，同时落盘到 `experience/<周期>/success_cases/`（或 `failure_cases/`）。
+5. 要改策略：把新的提示词**全文** POST 到 `/api/learning/prompts/publish` 发布为候选（此时不生效）→ 累积该版本的真实结果 → 在面板点「启用」。未通过选择性发布校验会被拒绝并说明理由；确认无误可用 `force` 跳过统计校验。
+6. 确认经验注入确有帮助后，再把 `LEARNING_READ_EXPERIENCE=true` 打开。
+
+面板只提供对账、启用与回退按钮；发布候选需调用 API。`force` 的含义与「盈亏=模型估算」的标注都直接显示在界面上，不藏在文档里。
+
+### 明确的边界
+
+- **不做在线权重训练。** 本项目是执行端，不是训练框架。
+- **不允许策略自动热切换。** 候选版本发布后必须显式激活，激活前可依据历史结果做选择性发布校验；程序不会自行把新策略投入实盘。
+- `realized_pnl_usd` 标注 `pnl_source: model_estimate` 时表示由价格与仓位推导，**不是交易所对账数据**；R 倍数由价格推导，是主要学习信号。
+- 期望 R、胜率等指标只在合格样本上统计，样本不足时明确拒绝结论，不给出乐观默认值。
+
+### 为什么这样设计
+
+- **执行端不承担训练职责**：引入训练栈会同时引入依赖、算力与不可解释性，而本项目的价值在于确定性的执行与风控。
+- **持仓期间静默变更策略是风险，不是特性**：因此「发布」与「激活」拆成两个动作，激活永远由人发起。
+- **宁可回答「样本不足：2 / 20，无法比较」**，也不给乐观默认值——这与「测试通过不代表已盈利」是同一条原则。
+- **估算与对账必须分离**：估算盈亏可用于相对比较，但不能被当作可对外宣称的收益。
 
 ## Web 与 API
 
@@ -140,6 +213,13 @@ Web 提供行情图表、策略分析、账户/持仓/委托、合约换算、�
 | GET / POST | `/api/config` / `/api/config/save_env` | 脱敏读取 / 保存配置 |
 | POST | `/api/automation` | 配置自动交易 |
 | GET | `/api/history/decisions` / `/api/history/trades` | 决策记录 / 交易审计 |
+| GET | `/api/learning/report` | 学习闭环状态、指标与提示词版本对比 |
+| POST | `/api/learning/reconcile` | 立即对账一次交易结果 |
+| GET | `/api/learning/outcomes` | 已结算结果列表 |
+| GET | `/api/learning/prompts` | 提示词版本列表 |
+| POST | `/api/learning/prompts/publish` | 发布候选提示词（不激活） |
+| POST | `/api/learning/prompts/activate` | 激活提示词版本（受发布校验约束） |
+| POST | `/api/learning/prompts/rollback` | 回退到上一提示词版本 |
 
 ## 验证与项目结构
 
@@ -148,11 +228,12 @@ cargo test --all-targets --locked
 node --check static/app.js
 ```
 
-本地 **66 项测试通过**，覆盖三个策略多空正例、无确认拒绝、高周期校验、费用和结构约束、持仓管理、市价漂移、价格取整、两阶段模型接口模拟、风险定仓及执行保护。模型和交易接口测试使用本机模拟服务，没有完成样本外收益回测或真实成交滑点/资金费评估。
+本地 **128 项测试通过**，覆盖三个策略多空正例、无确认拒绝、高周期校验、费用和结构约束、持仓管理、市价漂移、价格取整、两阶段模型接口模拟、风险定仓及执行保护，以及学习闭环的回执对账、R/MFE/MAE 计算、资格判定、经验库读写、提示词版本发布校验和鉴权路由。模型和交易接口测试使用本机模拟服务，没有完成样本外收益回测或真实成交滑点/资金费评估。
 
 ```text
 src/strategies.rs                  策略证据、净成本、入场及管理校验
 src/orchestrator/                  两阶段分析与 AlphaPilot 编排
+src/learning/                      回执对账、结构化反馈、经验库、提示词版本化
 src/okx/                          OKX 客户端、定仓和执行
 src/web/                          认证、账户、持仓管理及 Web API
 prompt_engineering/strategy_v1.txt 当前统一策略协议

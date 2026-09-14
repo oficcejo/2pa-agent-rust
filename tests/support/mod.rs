@@ -35,7 +35,14 @@ async fn respond(State(state): State<MockState>, request: Request) -> axum::resp
         .get(&format!("{path}?{query}"))
         .or_else(|| state.routes.get(&path))
     {
-        Some(v) => Json(v.clone()).into_response(),
+        Some(v) => {
+            if v.get("_http_status").and_then(|s| s.as_u64()) == Some(403) {
+                let mut body = v.clone();
+                if let Some(obj) = body.as_object_mut() { obj.remove("_http_status"); }
+                return (axum::http::StatusCode::FORBIDDEN, Json(body)).into_response();
+            }
+            Json(v.clone()).into_response()
+        }
         None => (axum::http::StatusCode::NOT_FOUND, "unexpected mock request").into_response(),
     }
 }

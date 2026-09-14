@@ -2,6 +2,7 @@ pub mod ai;
 pub mod config;
 pub mod data;
 pub mod indicators;
+pub mod learning;
 pub mod okx;
 pub mod orchestrator;
 pub mod records;

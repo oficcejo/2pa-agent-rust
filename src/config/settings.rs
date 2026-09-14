@@ -146,6 +146,92 @@ impl Default for ValidationSettings {
     }
 }
 
+/// Continual-learning loop configuration.
+///
+/// Everything is opt-in. In particular `read_experience` defaults to `false`
+/// because the legacy experience library was deliberately kept out of the
+/// three current strategies' prompts; turning the loop on does not silently
+/// change what the model sees.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningSettings {
+    /// Master switch for reconciliation and experience writing.
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_reconcile_interval")]
+    pub reconcile_interval_seconds: u64,
+    /// Bars after entry before an unresolved trade is closed at market for
+    /// accounting purposes.
+    #[serde(default = "default_max_hold_bars")]
+    pub max_hold_bars: u32,
+    /// Only reconcile audit rows newer than this many hours.
+    #[serde(default = "default_lookback_hours")]
+    pub lookback_hours: i64,
+    /// Write qualified outcomes into the experience library.
+    #[serde(default = "default_true")]
+    pub write_experience: bool,
+    /// Inject experience cases into stage-2 prompts. Off by default.
+    #[serde(default)]
+    pub read_experience: bool,
+    #[serde(default = "default_experience_entries")]
+    pub experience_max_entries: usize,
+    #[serde(default = "default_min_hold_bars")]
+    pub min_hold_bars: u32,
+    #[serde(default = "default_max_abs_r")]
+    pub max_abs_r: f64,
+    #[serde(default = "default_eval_min_samples")]
+    pub eval_min_samples: usize,
+    #[serde(default)]
+    pub eval_min_expectancy_delta_r: f64,
+    #[serde(default = "default_eval_max_win_rate_drop")]
+    pub eval_max_win_rate_drop: f64,
+}
+
+fn default_reconcile_interval() -> u64 { 60 }
+fn default_max_hold_bars() -> u32 { 96 }
+fn default_lookback_hours() -> i64 { 72 }
+fn default_experience_entries() -> usize { 3 }
+fn default_min_hold_bars() -> u32 { 1 }
+fn default_max_abs_r() -> f64 { 25.0 }
+fn default_eval_min_samples() -> usize { 20 }
+fn default_eval_max_win_rate_drop() -> f64 { 0.05 }
+
+impl Default for LearningSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            reconcile_interval_seconds: default_reconcile_interval(),
+            max_hold_bars: default_max_hold_bars(),
+            lookback_hours: default_lookback_hours(),
+            write_experience: true,
+            read_experience: false,
+            experience_max_entries: default_experience_entries(),
+            min_hold_bars: default_min_hold_bars(),
+            max_abs_r: default_max_abs_r(),
+            eval_min_samples: default_eval_min_samples(),
+            eval_min_expectancy_delta_r: 0.0,
+            eval_max_win_rate_drop: default_eval_max_win_rate_drop(),
+        }
+    }
+}
+
+impl LearningSettings {
+    pub fn qualification_policy(&self) -> crate::learning::feedback::QualificationPolicy {
+        crate::learning::feedback::QualificationPolicy {
+            require_filled: true,
+            min_hold_bars: self.min_hold_bars,
+            max_abs_r: self.max_abs_r,
+        }
+    }
+
+    pub fn evaluation_policy(&self) -> crate::learning::evaluation::EvaluationPolicy {
+        crate::learning::evaluation::EvaluationPolicy {
+            min_samples: self.eval_min_samples,
+            min_expectancy_delta_r: self.eval_min_expectancy_delta_r,
+            max_win_rate_drop: self.eval_max_win_rate_drop,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OKXSettings {
     #[serde(default = "default_okx_base_url")]
@@ -256,6 +342,8 @@ pub struct Settings {
     pub validation: ValidationSettings,
     #[serde(default)]
     pub okx: OKXSettings,
+    #[serde(default)]
+    pub learning: LearningSettings,
 }
 
 impl Settings {
@@ -356,6 +444,22 @@ impl Settings {
         }
         if let Ok(v) = std::env::var("OKX_AUTOMATION_SESSION_TIMEZONE") {
             if !v.trim().is_empty() { settings.okx.automation_session_timezone = v.trim().to_string(); }
+        }
+
+        if let Ok(v) = std::env::var("LEARNING_ENABLED") {
+            settings.learning.enabled = v.trim().eq_ignore_ascii_case("true") || v.trim() == "1";
+        }
+        if let Ok(v) = std::env::var("LEARNING_READ_EXPERIENCE") {
+            settings.learning.read_experience = v.trim().eq_ignore_ascii_case("true") || v.trim() == "1";
+        }
+        if let Ok(v) = std::env::var("LEARNING_WRITE_EXPERIENCE") {
+            settings.learning.write_experience = v.trim().eq_ignore_ascii_case("true") || v.trim() == "1";
+        }
+        if let Ok(v) = std::env::var("LEARNING_RECONCILE_INTERVAL_SECONDS") {
+            if let Ok(num) = v.trim().parse::<u64>() { settings.learning.reconcile_interval_seconds = num.max(10); }
+        }
+        if let Ok(v) = std::env::var("LEARNING_MAX_HOLD_BARS") {
+            if let Ok(num) = v.trim().parse::<u32>() { settings.learning.max_hold_bars = num.max(1); }
         }
 
         settings

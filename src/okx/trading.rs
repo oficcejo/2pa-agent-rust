@@ -41,6 +41,20 @@ pub struct AuditEntry {
     pub strategy_id: String,
     #[serde(default)]
     pub strategy_version: String,
+    /// Decision record that produced this order. Ties the executed order back
+    /// to the full analysis (prompt, diagnosis, proposal).
+    #[serde(default)]
+    pub decision_record_id: String,
+    /// Prompt artifact version and hash live at decision time.
+    #[serde(default)]
+    pub prompt_version: String,
+    #[serde(default)]
+    pub prompt_hash: String,
+    /// Market context, carried here so reconciliation needs no extra lookup.
+    #[serde(default)]
+    pub cycle_position: String,
+    #[serde(default)]
+    pub detected_patterns: Vec<String>,
     pub id: String,
     pub timestamp_ms: i64,
     pub submitted: bool,
@@ -217,6 +231,13 @@ impl OKXTradeExecutor {
                 "stop_loss_price": decision.get("stop_loss_price"),
                 "take_profit_price": decision.get("take_profit_price"),
                 "trade_confidence": decision.get("trade_confidence").or_else(|| decision.get("confidence")),
+                // Receipt linkage: without these the audit row cannot be tied
+                // back to a decision or a prompt revision.
+                "decision_record_id": decision.get("decision_record_id"),
+                "prompt_version": decision.get("prompt_version"),
+                "prompt_hash": decision.get("prompt_hash"),
+                "cycle_position": decision.get("cycle_position"),
+                "detected_patterns": decision.get("detected_patterns"),
             }
         });
 
@@ -281,9 +302,20 @@ impl OKXTradeExecutor {
                 let error_code = item.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let broker_tag = item.get("broker_tag").and_then(|v| v.as_str()).unwrap_or(BROKER_TAG).to_string();
 
+                let detected_patterns: Vec<String> = dec
+                    .get("detected_patterns")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|p| p.as_str().map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+
                 entries.push(AuditEntry {
                     strategy_id: dec["strategy_id"].as_str().unwrap_or("legacy_unknown").into(),
                     strategy_version: dec["strategy_version"].as_str().unwrap_or("").into(),
+                    decision_record_id: dec["decision_record_id"].as_str().unwrap_or("").into(),
+                    prompt_version: dec["prompt_version"].as_str().unwrap_or("").into(),
+                    prompt_hash: dec["prompt_hash"].as_str().unwrap_or("").into(),
+                    cycle_position: dec["cycle_position"].as_str().unwrap_or("").into(),
+                    detected_patterns,
                     id,
                     timestamp_ms,
                     submitted,

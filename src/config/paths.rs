@@ -28,9 +28,21 @@ pub fn pending_records_dir() -> PathBuf {
     records_dir().join("pending")
 }
 
+/// Resolved trade outcomes, one file per signal id.
+pub fn outcomes_dir() -> PathBuf {
+    records_dir().join("outcomes")
+}
+
+/// Versioned prompt artifacts.
+pub fn prompt_artifacts_dir() -> PathBuf {
+    prompt_dir().join("artifacts")
+}
+
 pub fn ensure_dirs() {
     let _ = std::fs::create_dir_all(config_dir());
     let _ = std::fs::create_dir_all(records_dir());
     let _ = std::fs::create_dir_all(pending_records_dir());
     let _ = std::fs::create_dir_all(experience_dir());
+    let _ = std::fs::create_dir_all(outcomes_dir());
+    let _ = std::fs::create_dir_all(prompt_artifacts_dir());
 }

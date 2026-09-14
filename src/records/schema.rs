@@ -14,6 +14,17 @@ pub struct RecordMeta {
     pub decision_stance: String,
     #[serde(default = "default_trading_system")]
     pub trading_system: String,
+    /// Stable id for this decision. The reconciler links submitted orders back
+    /// to it so an outcome can be attributed to the decision that caused it.
+    #[serde(default)]
+    pub record_id: String,
+    /// Prompt artifact version that produced this decision.
+    #[serde(default)]
+    pub prompt_version: String,
+    /// Content hash of that artifact, so a decision can be tied to the exact
+    /// prompt text even if the version label is reused.
+    #[serde(default)]
+    pub prompt_hash: String,
 }
 
 fn default_stance() -> String { "balanced".to_string() }

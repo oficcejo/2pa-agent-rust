@@ -30,6 +30,8 @@ config/exception_state.json
 # 运行数据、交易审计与日志记录
 /logs/*
 !/logs/.gitkeep
+# 提示词版本化产物（运行时首启自动播种，非源码）
+/prompt_engineering/artifacts/
 /records/*.json
 /records/pending/*.json
 /records/*.jsonl

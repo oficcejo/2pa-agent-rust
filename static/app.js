@@ -12,6 +12,8 @@ let visibleInstrumentValues = [];
 let highlightedInstrumentIndex = -1;
 let decisionRecords = [];
 let tradeRecords = [];
+let learningReport = null;
+let learningOutcomes = [];
 let sessionPresetOptions = [];
 let sessionDirty = false;
 let currentTradingSystem = "2pa_trend";
@@ -208,12 +210,15 @@ function renderAutomationStatus(state, forceSessionControls = false) {
   const switchElement = $("automationSwitch");
   if (switchElement) switchElement.checked = enabled;
   const statusElement = $("automationStatus");
-  if (statusElement) statusElement.textContent = enabled ? "运行中" : "已关闭";
+  const runtime = state.automation_runtime || {};
+  const phaseLabels = { error: "运行异常", analyzing: "分析中", waiting_bar: "等待收盘", checking_orders: "检查挂单", checking_candles: "检查行情", outside_session: "时段外暂停" };
+  if (statusElement) statusElement.textContent = enabled ? (phaseLabels[runtime.phase] || "等待检查") : "已关闭";
   const messageElement = $("automationMessage");
   if (messageElement) {
     if (!enabled) messageElement.textContent = "自动交易未启用";
+    else if (runtime.phase === "error") messageElement.textContent = `${runtime.last_error || runtime.message}${runtime.next_retry_ms ? `；下次重试：${formatHistoryTime(runtime.next_retry_ms)}` : ""}`;
     else if (!state.automation_session?.active) messageElement.textContent = "自动交易已启用，当前不在分析时段，已暂停分析与交易";
-    else if (state.can_execute) messageElement.textContent = "自动分析与执行已生效";
+    else if (state.can_execute) messageElement.textContent = `${runtime.message || "自动交易已开启，等待后台检查"}${runtime.last_success_ms ? `；最近成功：${formatHistoryTime(runtime.last_success_ms)}` : "；尚无成功分析"}`;
     else messageElement.textContent = "已启用，但执行条件未全部满足";
   }
   const autoSystem = $("autoSystem");
@@ -225,7 +230,19 @@ function renderAutomationStatus(state, forceSessionControls = false) {
 }
 
 async function loadStatus() {
-  statusData = await api("/api/status");
+  try {
+    statusData = await api("/api/status");
+  } catch (error) {
+    // Surface the failure instead of leaving the badge stuck on 连接中 and
+    // letting the rejection abort the rest of the startup chain.
+    const failedBadge = $("modeBadge");
+    if (failedBadge) {
+      failedBadge.textContent = "状态读取失败";
+      failedBadge.className = "badge muted";
+    }
+    toast(`读取系统状态失败：${error.message}`);
+    return;
+  }
   const modeBadge = $("modeBadge");
   if (modeBadge) {
     modeBadge.textContent = statusData.mode === "demo" ? "模拟交易" : "实盘交易";
@@ -290,62 +307,99 @@ function updateInstTypeBadge() {
   }
 }
 
+const instrumentMarketLabel = (productType) => (productType === "SPOT" ? "现货" : "永续");
+
+// Fetch one product type in isolation, with a single retry.
+//
+// The OKX public instruments endpoint is occasionally reset mid-flight. A
+// retry costs 400ms and removes the most common cause of an empty menu.
+async function fetchInstrumentMarket(productType) {
+  let lastError = "";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const rows = await api(`/api/instruments?inst_type=${productType}`);
+      return { productType, rows: Array.isArray(rows) ? rows : [], failed: false, error: "" };
+    } catch (error) {
+      lastError = error.message || String(error);
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+  return { productType, rows: [], failed: true, error: lastError };
+}
+
 async function loadInstruments() {
-  instrumentOptions = [];
   visibleInstrumentValues = [];
   closeInstrumentMenu();
   $("instType").disabled = true;
   $("symbol").disabled = true;
   $("symbolToggle").disabled = true;
+  const current = $("symbol").value;
   try {
-    const markets = await Promise.all(["SPOT", "SWAP"].map(async (productType) => ({
-      productType,
-      rows: await api(`/api/instruments?inst_type=${productType}`),
-    })));
-    const current = $("symbol").value;
+    // SPOT and SWAP are independent requests; isolating them means one failing
+    // market can never blank out the other's instruments.
+    const markets = await Promise.all(["SPOT", "SWAP"].map(fetchInstrumentMarket));
     const groupOrder = ["常见加密货币", "美股", "大宗商品与指数", "其他 USDT 现货", "其他 USDT 永续"];
-    instrumentOptions = markets.flatMap(({ productType, rows }) => rows
-      .filter((item) => {
-        const id = String(item.instId || "");
-        return productType === "SPOT" ? id.endsWith("-USDT") : id.endsWith("-USDT-SWAP");
-      })
-      .map((item) => {
-        const id = String(item.instId || "");
-        const root = id.split("-")[0];
-        const knownGroup = instrumentGroups.find((group) => group.symbols.has(root));
-        const group = knownGroup?.label || (productType === "SPOT" ? "其他 USDT 现货" : "其他 USDT 永续");
-        const name = instrumentNames[root] || "";
-        const marketLabel = productType === "SPOT" ? "现货" : "永续";
-        return {
-          id, productType, group, name, marketLabel,
-          search: `${id} ${name} ${group} ${marketLabel}`.toUpperCase(),
-        };
-      }));
-    instrumentOptions.sort((left, right) => {
-      const groupDifference = groupOrder.indexOf(left.group) - groupOrder.indexOf(right.group);
-      if (groupDifference) return groupDifference;
-      const group = instrumentGroups.find((item) => item.label === left.group);
-      if (group) {
-        const priority = [...group.symbols];
-        const rootDifference = priority.indexOf(left.id.split("-")[0]) - priority.indexOf(right.id.split("-")[0]);
-        if (rootDifference) return rootDifference;
-        if (left.productType !== right.productType) return left.productType === "SPOT" ? -1 : 1;
-      }
-      return left.id.localeCompare(right.id);
-    });
+    const loaded = markets
+      .filter((market) => !market.failed)
+      .flatMap(({ productType, rows }) => rows
+        .filter((item) => {
+          const id = String(item.instId || "");
+          return productType === "SPOT" ? id.endsWith("-USDT") : id.endsWith("-USDT-SWAP");
+        })
+        .map((item) => {
+          const id = String(item.instId || "");
+          const root = id.split("-")[0];
+          const knownGroup = instrumentGroups.find((group) => group.symbols.has(root));
+          const group = knownGroup?.label || (productType === "SPOT" ? "其他 USDT 现货" : "其他 USDT 永续");
+          const name = instrumentNames[root] || "";
+          const marketLabel = instrumentMarketLabel(productType);
+          return {
+            id, productType, group, name, marketLabel,
+            search: `${id} ${name} ${group} ${marketLabel}`.toUpperCase(),
+          };
+        }));
+
+    // Only replace the list once something actually arrived, so a failed
+    // refresh never destroys a previously usable menu.
+    if (loaded.length) {
+      instrumentOptions = loaded;
+      instrumentOptions.sort((left, right) => {
+        const groupDifference = groupOrder.indexOf(left.group) - groupOrder.indexOf(right.group);
+        if (groupDifference) return groupDifference;
+        const group = instrumentGroups.find((item) => item.label === left.group);
+        if (group) {
+          const priority = [...group.symbols];
+          const rootDifference = priority.indexOf(left.id.split("-")[0]) - priority.indexOf(right.id.split("-")[0]);
+          if (rootDifference) return rootDifference;
+          if (left.productType !== right.productType) return left.productType === "SPOT" ? -1 : 1;
+        }
+        return left.id.localeCompare(right.id);
+      });
+    }
 
     const preferred = $("instType").value === "SWAP" ? "BTC-USDT-SWAP" : "BTC-USDT";
     const available = new Set(instrumentOptions.map((item) => item.id));
-    $("symbol").value = available.has(current)
-      ? current
-      : available.has(preferred) ? preferred : String(instrumentOptions[0]?.id || "");
-    closeInstrumentMenu();
+    if (available.size) {
+      $("symbol").value = available.has(current)
+        ? current
+        : available.has(preferred) ? preferred : instrumentOptions[0].id;
+    } else if (current) {
+      // Never blank out what the user already had on a failed load.
+      $("symbol").value = current;
+    }
+
+    const failed = markets.filter((market) => market.failed);
+    if (failed.length) {
+      const labels = failed.map((market) => instrumentMarketLabel(market.productType)).join("、");
+      toast(`${labels}品种加载失败（${failed[0].error}）；已展示其余品种，可点「刷新行情」重试`);
+    }
   } catch (error) {
     toast(error.message);
   } finally {
     $("instType").disabled = false;
     $("symbol").disabled = false;
     $("symbolToggle").disabled = false;
+    closeInstrumentMenu();
   }
 }
 
@@ -364,7 +418,11 @@ function renderInstrumentMenu(query = "") {
   highlightedInstrumentIndex = matches.length ? 0 : -1;
 
   if (!matches.length) {
-    $("instrumentMenu").innerHTML = '<div class="instrument-empty">未找到匹配品种</div>';
+    // Distinguish "nothing matched your search" from "the list never loaded",
+    // which the old message conflated and left unexplained.
+    $("instrumentMenu").innerHTML = instrumentOptions.length
+      ? '<div class="instrument-empty">未找到匹配品种</div>'
+      : '<div class="instrument-empty">品种列表未加载，请点「刷新行情」(↻) 重试</div>';
   } else {
     const groups = new Map();
     matches.forEach((item) => {
@@ -870,6 +928,152 @@ async function loadTradeHistory(silent = false) {
   }
 }
 
+function formatR(value) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  const n = Number(value);
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}R`;
+}
+
+function formatPercent(value) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function renderLearning() {
+  const report = learningReport || {};
+  const outcomes = Array.isArray(learningOutcomes) ? learningOutcomes : [];
+  const overall = report.overall || {};
+  const counts = report.outcomes || {};
+  const prompt = report.active_prompt || {};
+
+  $("learningState").hidden = true;
+  $("learningDashboard").hidden = false;
+
+  $("learningOutcomeTotal").textContent = String(counts.total ?? 0);
+  $("learningQualified").textContent = String(counts.qualified ?? 0);
+  $("learningExpectancy").textContent = (overall.samples ? formatR(overall.expectancy_r) : "—");
+  $("learningWinRate").textContent = (overall.samples ? formatPercent(overall.win_rate) : "—");
+
+  $("learningPromptVersion").textContent = prompt.version || "—";
+  $("learningPromptSource").textContent = prompt.source === "artifact" ? "版本化 artifact" : "内置回退";
+  $("learningPromptHash").textContent = prompt.hash || "—";
+  $("learningReadExperience").textContent = report.read_experience ? "已开启" : "关闭（默认）";
+
+  const enabled = !!report.enabled;
+  const badge = $("learningEnabledBadge");
+  badge.textContent = enabled ? "已开启" : "已关闭";
+  badge.classList.toggle("inactive", !enabled);
+
+  const runtime = report.runtime || {};
+  const notes = [];
+  if (!enabled) notes.push("学习闭环未启用，需将 LEARNING_ENABLED 设为 true");
+  if (runtime.last_reconcile_ms) notes.push(`上次对账 ${formatHistoryTime(runtime.last_reconcile_ms)}`);
+  notes.push(`成交 ${counts.filled ?? 0} 笔 · 已写入经验 ${counts.qualified ?? 0} 笔`);
+  if (runtime.last_error) notes.push(`最近错误：${runtime.last_error}`);
+  $("learningRuntimeNote").textContent = notes.join(" · ");
+  $("learningPromptHint").textContent = enabled ? "对账与经验写入进行中" : "未启用";
+
+  const versions = Array.isArray(report.versions) ? report.versions : [];
+  $("learningVersionCount").textContent = `${versions.length} 个`;
+  $("learningVersions").innerHTML = versions.length ? versions.map((entry) => {
+    const metrics = entry.metrics || {};
+    const verdict = entry.verdict;
+    const isActive = entry.version === prompt.version;
+    const statusText = isActive ? "当前启用" : (verdict ? (verdict.accepted ? "可发布" : "未通过") : "无对比数据");
+    const statusClass = (isActive || (verdict && verdict.accepted)) ? "submitted" : "rejected";
+    const detail = [
+      `样本 ${metrics.samples ?? 0}`,
+      `期望 ${formatR(metrics.expectancy_r)}`,
+      `胜率 ${metrics.samples ? formatPercent(metrics.win_rate) : "—"}`,
+      `期望差 ${verdict ? formatR(verdict.expectancy_delta_r) : "—"}`,
+    ].join(" · ");
+    const reason = (verdict && !verdict.accepted && Array.isArray(verdict.reasons) && verdict.reasons.length)
+      ? `<span class="history-error">${escapeHtml(verdict.reasons.join("；"))}</span>`
+      : "";
+    const action = isActive ? ""
+      : `<button class="small-action" type="button" data-action="activate-prompt" data-version="${escapeHtml(entry.version)}">启用</button>`;
+    return `
+      <div class="history-row">
+        <div class="history-main">
+          <span class="history-line">
+            <strong>${escapeHtml(entry.version)}</strong>
+            <b class="history-status ${statusClass}">${statusText}</b>
+          </span>
+          <span class="history-detail">${escapeHtml(detail)}</span>
+          ${reason}
+        </div>
+        ${action}
+      </div>`;
+  }).join("") : `<div class="history-state">尚无按版本统计的结果</div>`;
+
+  $("learningOutcomeCount").textContent = `${outcomes.length} 条`;
+  $("learningOutcomes").innerHTML = outcomes.length ? outcomes.map((outcome) => {
+    const direction = directionMeta(outcome.side === "short" ? "做空" : "做多");
+    const statusClass = Number(outcome.r_multiple) > 0 ? "submitted" : "rejected";
+    const detail = [
+      formatHistoryTime(outcome.resolved_ms || outcome.created_ms),
+      outcome.strategy_id || "—",
+      outcome.prompt_version || "—",
+      outcome.timeframe || "—",
+      `持仓 ${outcome.hold_bars ?? 0} 根`,
+      `MFE ${formatR(outcome.mfe_r)}`,
+      `MAE ${formatR(outcome.mae_r)}`,
+      outcome.pnl_source === "model_estimate" ? "盈亏=模型估算" : "盈亏=成交对账",
+    ].join(" · ");
+    const note = outcome.qualified ? "" : `<span class="history-error">未入库：${escapeHtml(outcome.qualification_reason || "")}</span>`;
+    return `
+      <div class="history-row">
+        <div class="history-main">
+          <span class="history-line">
+            <strong>${escapeHtml(outcome.symbol || "—")}</strong>
+            <span class="history-direction ${direction.className}">${direction.label}</span>
+            <b class="history-status ${statusClass}">${formatR(outcome.r_multiple)}</b>
+          </span>
+          <span class="history-detail">${escapeHtml(detail)}</span>
+          ${note}
+        </div>
+      </div>`;
+  }).join("") : `<div class="history-state">暂无已结算结果</div>`;
+
+  const cycles = (report.experience && Array.isArray(report.experience.cycles)) ? report.experience.cycles : [];
+  $("learningExperienceCount").textContent = `${cycles.length} 类`;
+  $("learningExperience").innerHTML = cycles.length ? cycles.map((cycle) => `
+      <div class="history-row">
+        <div class="history-main">
+          <span class="history-line"><strong>${escapeHtml(cycle.cycle_position)}</strong></span>
+          <span class="history-detail">成功 ${cycle.success_cases} 条 · 失败 ${cycle.failure_cases} 条</span>
+        </div>
+      </div>`).join("") : `<div class="history-state">经验库为空</div>`;
+}
+
+async function loadLearning() {
+  try {
+    learningReport = await api("/api/learning/report");
+    learningOutcomes = await api("/api/learning/outcomes?limit=30");
+    renderLearning();
+  } catch (error) {
+    $("learningState").hidden = false;
+    $("learningState").textContent = error.message;
+  }
+}
+
+async function reconcileLearning() {
+  try {
+    const report = await api("/api/learning/reconcile", { method: "POST" });
+    toast(`对账完成：已解决 ${report.resolved ?? 0}，仍持有 ${report.still_open ?? 0}，写入经验 ${report.experiences_written ?? 0}`);
+    await loadLearning();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function activatePromptVersion(version, force = false) {
+  return api("/api/learning/prompts/activate", {
+    method: "POST",
+    body: JSON.stringify({ version, force }),
+  });
+}
+
 async function deleteHistoryRecord(kind, recordId) {
   const label = kind === "decisions" ? "决策" : "交易";
   if (!window.confirm(`确定删除这条${label}记录？`)) return;
@@ -1186,6 +1390,7 @@ document.querySelectorAll(".tabs button").forEach((button) => button.addEventLis
   if (button.dataset.tab === "contract") loadContractSpecs();
   if (button.dataset.tab === "decision") loadDecisionHistory();
   if (button.dataset.tab === "automation") loadTradeHistory();
+  if (button.dataset.tab === "learning") loadLearning();
 }));
 
 $("instType").addEventListener("change", changeInstrumentType);
@@ -1226,6 +1431,38 @@ $("analyzeButton").addEventListener("click", analyze);
 $("accountRefresh").addEventListener("click", () => loadAccount());
 $("decisionHistoryRefresh").addEventListener("click", () => loadDecisionHistory());
 $("tradeHistoryRefresh").addEventListener("click", () => loadTradeHistory());
+$("learningRefresh").addEventListener("click", () => loadLearning());
+$("learningReconcile").addEventListener("click", reconcileLearning);
+$("learningRollback").addEventListener("click", async () => {
+  if (!window.confirm("确定回退到上一个提示词版本？")) return;
+  try {
+    const result = await api("/api/learning/prompts/rollback", { method: "POST" });
+    toast(`已回退到 ${result.active}`);
+    await loadLearning();
+  } catch (error) {
+    toast(error.message);
+  }
+});
+$("learningVersions").addEventListener("click", async (event) => {
+  const button = event.target.closest('[data-action="activate-prompt"]');
+  if (!button) return;
+  const version = button.dataset.version;
+  if (!window.confirm(`确定启用提示词版本 ${version}？启用后的新分析将使用该版本。`)) return;
+  try {
+    await activatePromptVersion(version, false);
+    toast(`已启用 ${version}`);
+    await loadLearning();
+  } catch (error) {
+    if (!window.confirm(`${error.message}\n\n是否跳过统计校验、强制启用？`)) return;
+    try {
+      await activatePromptVersion(version, true);
+      toast(`已强制启用 ${version}`);
+      await loadLearning();
+    } catch (forceError) {
+      toast(forceError.message);
+    }
+  }
+});
 $("sessionPreset").addEventListener("change", changeSessionPreset);
 $("customSessionFields").addEventListener("input", () => { sessionDirty = true; });
 $("sessionApply").addEventListener("click", applyAutomationSession);
@@ -1554,7 +1791,9 @@ $("popularSpecsList").addEventListener("click", (e) => {
   }
 });
 
-Promise.all([loadStatus(), loadInstruments(), loadCandles(), loadDecisionHistory(), loadTradeHistory()])
+// allSettled: a single failing loader must not skip the trading-system restore
+// below, and must not surface as an unhandled rejection.
+Promise.allSettled([loadStatus(), loadInstruments(), loadCandles(), loadDecisionHistory(), loadTradeHistory()])
   .then(async () => {
     try {
       const savedSys = localStorage.getItem("okx_trading_system");
@@ -1580,6 +1819,7 @@ Promise.all([loadStatus(), loadInstruments(), loadCandles(), loadDecisionHistory
 
 setInterval(loadCandles, 30000);
 setInterval(() => loadStatus().catch((error) => toast(error.message)), 15000);
+setInterval(() => { loadDecisionHistory(); loadTradeHistory(); }, 30000);
 setInterval(() => {
   if ($("accountTab").classList.contains("active")) loadAccount(true);
   if ($("contractTab").classList.contains("active")) loadContractSpecs($("calcSymbolInput").value.trim());
