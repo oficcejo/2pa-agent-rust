@@ -3,6 +3,7 @@
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Release](https://img.shields.io/badge/Release-v0.5.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.5.0)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![OKX 邀请注册](https://img.shields.io/badge/OKX-邀请注册-black.svg)](https://www.topzhjdgxcb.com/join/6746503)
 
 基于 Rust、Axum 和 Tokio 的 OKX 交易研究与执行工具，支持 LLM 两阶段分析、原生 AlphaPilot 因子、Web 控制台、自动交易时段，以及默认关闭的自进化闭环。模型负责解释和提出方案，程序根据已收盘行情、结构、成本和账户额度决定是否允许执行。
 
@@ -74,7 +75,7 @@ API 支持 HTTP Basic 和 `Authorization: Bearer <WEB_AUTH_TOKEN>`。例如 `cur
 
 从 [Releases](https://github.com/oficcejo/2pa-agent-rust/releases) 下载产物。v0.5.0 提供 Windows x64 程序及 SHA-256 校验文件；Linux/macOS 可从源码编译。
 
-在独立目录运行 `okx-2pa-agent.exe`，打开 <http://127.0.0.1:8088/>，取得密码并登录。在「系统配置」填写兼容 OpenAI 的模型接口和 OKX 凭据。首次缺少配置时程序会尝试打开浏览器；保存后写入运行目录 `.env` 并更新内存配置。
+在独立目录运行 `okx-2pa-agent.exe`，打开 <http://127.0.0.1:8088/>，取得密码并登录。在「系统配置」填写兼容 OpenAI 的模型接口和 OKX 凭据（尚未拥有 OKX 账户的用户，可通过 [OKX 专属邀请注册链接](https://www.topzhjdgxcb.com/join/6746503) 开户并获取 API 凭证）。首次缺少配置时程序会尝试打开浏览器；保存后写入运行目录 `.env` 并更新内存配置。
 
 也可复制 [.env.example](.env.example) 为 `.env`，自行配置。以下示例没有可用凭据：
 
@@ -245,6 +246,6 @@ records/                          决策与交易审计（不提交）
 
 ## 文档与许可
 
-[使用文档](https://doc.zhongdu.net) · [Discord 社区](https://discord.gg/jk4mnW53gK)
+[使用文档](https://doc.zhongdu.net) · [Discord 社区](https://discord.gg/jk4mnW53gK) · [OKX 邀请注册](https://www.topzhjdgxcb.com/join/6746503)
 
 本项目按 [GNU AGPL v3](LICENSE) 开源，包声明为 `AGPL-3.0-or-later`。软件用于策略研究，交易可能损失本金；应先验证模拟盘执行及独立策略的成交表现。
