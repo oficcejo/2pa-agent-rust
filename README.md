@@ -1,13 +1,13 @@
 # OKX 2PA Agent
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Release](https://img.shields.io/badge/Release-v0.5.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.5.0)
+[![Release](https://img.shields.io/badge/Release-v0.6.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.6.0)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![OKX 邀请注册](https://img.shields.io/badge/OKX-邀请注册-black.svg)](https://www.topzhjdgxcb.com/join/6746503)
 
 基于 Rust、Axum 和 Tokio 的 OKX 交易研究与执行工具，支持 LLM 两阶段分析、Web 控制台、自动交易时段，以及默认关闭的自进化闭环。模型负责解释和提出方案，程序根据已收盘行情、结构、成本和账户额度决定是否允许执行。
 
-当前版本 **v0.5.0**，策略协议 **2026-09-v1**。规则阈值是研究基线，测试通过不代表策略已经实现盈利。
+当前版本 **v0.6.0**，策略协议 **2026-09-v1**。规则阈值是研究基线，测试通过不代表策略已经实现盈利。
 
 ## 自进化
 
