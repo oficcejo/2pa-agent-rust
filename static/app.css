@@ -318,3 +318,54 @@
 .position-context-badge strong{font-weight:700}
 .position-context-badge small{font-size:11px;opacity:0.9}
 
+/* 选项卡栏弹性自适应支持 6 个 Tab */
+.tabs{display:flex!important;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tabs button{flex:1 0 auto;min-width:60px;padding:0 8px}
+
+/* 回测控制台与指标样式 */
+.bt-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.bt-form-grid label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted)}
+.bt-form-grid input,.bt-form-grid select{width:100%;height:32px;background:#171b1d;color:var(--text);border:1px solid #30373a;border-radius:4px;padding:0 8px;font:inherit}
+.bt-toggles-row{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:8px 10px;background:#13181a;border-radius:4px;border:1px solid #232a2e}
+.bt-toggles-row label{font-size:12px;color:#c2ccd0;cursor:pointer}
+
+/* 进度条 */
+.bt-status-card{margin-top:12px;padding:12px;background:#12181a;border:1px solid #2b3940;border-radius:4px}
+.bt-status-header{display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:6px}
+.bt-progress-bar{width:100%;height:7px;background:#1f282c;border-radius:4px;overflow:hidden;margin:6px 0}
+#btProgressBarFill{height:100%;background:linear-gradient(90deg,var(--green),#4ade80);transition:width .2s ease}
+.bt-status-card small{color:var(--muted);font-size:11px;display:block}
+
+/* KPI 指标卡片网格 */
+.bt-kpis-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:12px}
+.bt-kpi-card{background:#131719;border:1px solid #252d30;border-radius:4px;padding:10px 12px;display:flex;flex-direction:column}
+.bt-kpi-card small{color:var(--muted);font-size:11px}
+.bt-kpi-card strong{font-size:17px;margin:4px 0 2px;font-variant-numeric:tabular-nums;color:var(--text)}
+.bt-kpi-sub{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* 双轨图表 */
+.bt-dual-chart{position:relative;height:240px;background:#0d1011;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.bt-dual-chart canvas{display:block;width:100%;height:100%}
+.bt-chart-legend{display:flex;justify-content:center;gap:18px;margin-top:8px;font-size:11px}
+.legend-item.equity-line{color:#1fc48d}
+.legend-item.drawdown-line{color:#f05b67}
+
+/* 成交记录表格与过滤按钮 */
+.bt-table-filters{display:flex;gap:4px}
+.bt-trades-table td{font-size:11px;padding:6px 4px}
+.bt-trades-table td small{color:var(--muted);font-size:10px}
+
+/* 成交记录行展开详情样式 */
+.bt-trade-row{cursor:pointer;transition:background .15s ease}
+.bt-trade-row:hover{background:rgba(255,255,255,0.03)}
+.bt-trade-row.expanded{background:rgba(255,255,255,0.05)}
+.bt-trade-detail-row td{padding:0!important;background:#0d1113;border-bottom:1px solid #28343b}
+.bt-trade-detail-content{padding:10px 14px;font-size:11px;line-height:1.6}
+.bt-detail-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 12px;margin-bottom:8px}
+.bt-detail-item{display:flex;flex-direction:column}
+.bt-detail-item span{color:var(--muted);font-size:10px}
+.bt-detail-item strong{color:var(--text);font-size:11px;font-variant-numeric:tabular-nums}
+.bt-detail-notes{padding:6px 8px;background:#141a1d;border-radius:4px;border:1px solid #222c31;color:#94a3b8;font-size:11px}
+.expand-icon{display:inline-block;font-size:9px;margin-right:4px;transition:transform .2s ease;color:var(--muted)}
+.bt-trade-row.expanded .expand-icon{transform:rotate(90deg);color:var(--green)}

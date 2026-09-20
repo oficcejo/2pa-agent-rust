@@ -325,3 +325,110 @@ pub async fn handle_rollback_prompt(State(service): State<AppState>) -> Response
     }
 }
 
+/// Generate GEPA reflection mutation proposal from failure cases.
+pub async fn handle_learning_propose(State(service): State<AppState>) -> Response {
+    match service.propose_prompt_mutation() {
+        Ok(data) => Json(data).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SolidifyEpisodeRequest {
+    pub signal_id: String,
+}
+
+/// Solidify a trade outcome into a benchmark episode.
+pub async fn handle_solidify_episode(
+    State(service): State<AppState>,
+    Json(req): Json<SolidifyEpisodeRequest>,
+) -> Response {
+    match service.solidify_outcome_to_episode(&req.signal_id) {
+        Ok(data) => Json(data).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// List all benchmark episodes.
+pub async fn handle_list_benchmark_episodes(State(service): State<AppState>) -> Response {
+    match service.list_benchmark_episodes() {
+        Ok(data) => Json(data).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Reset daily drawdown circuit breaker.
+pub async fn handle_reset_circuit_breaker(State(service): State<AppState>) -> Response {
+    Json(service.reset_circuit_breaker()).into_response()
+}
+
+/// Toggle shadow trading mode dynamically.
+pub async fn handle_toggle_shadow_trading(State(service): State<AppState>) -> Response {
+    Json(service.toggle_shadow_trading()).into_response()
+}
+
+/// Run asynchronous backtest job.
+pub async fn handle_run_backtest(
+    State(service): State<AppState>,
+    Json(config): Json<crate::backtest::types::BacktestConfig>,
+) -> Response {
+    match service.submit_backtest_job(config) {
+        Ok(job_id) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "job_id": job_id,
+                "status": "running"
+            })),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// Query status of backtest job.
+pub async fn handle_backtest_status(
+    State(service): State<AppState>,
+    AxumPath(job_id): AxumPath<String>,
+) -> Response {
+    match service.get_backtest_status(&job_id) {
+        Some(status) => Json(status).into_response(),
+        None => (StatusCode::NOT_FOUND, "Job not found").into_response(),
+    }
+}
+
+/// Fetch complete backtest report.
+pub async fn handle_backtest_report(
+    State(service): State<AppState>,
+    AxumPath(job_id): AxumPath<String>,
+) -> Response {
+    match service.get_backtest_report(&job_id) {
+        Some(report) => Json(report).into_response(),
+        None => match service.get_backtest_status(&job_id) {
+            Some(status) => {
+                if status.status == "failed" {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": status.error.unwrap_or_else(|| "Backtest failed".to_string()),
+                            "message": status.message
+                        })),
+                    )
+                        .into_response()
+                } else {
+                    (
+                        StatusCode::ACCEPTED,
+                        Json(serde_json::json!({
+                            "status": status.status,
+                            "progress_pct": status.progress_pct,
+                            "message": status.message
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+            None => (StatusCode::NOT_FOUND, "Job not found").into_response(),
+        },
+    }
+}
+
+

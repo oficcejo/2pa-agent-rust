@@ -25,15 +25,27 @@ pub mod artifact;
 pub mod evaluation;
 pub mod experience_writer;
 pub mod feedback;
+pub mod hooks;
 pub mod outcome_store;
 pub mod reconciler;
+pub mod reflector;
+pub mod replay_evaluator;
+pub mod trade2episode;
 
 pub use artifact::{ActivePrompt, PromptArtifact, PromptArtifactStore, PromptIndex};
 pub use evaluation::{
-    compare_candidate, evaluate_versions, group_by_prompt_version, metrics_for, EvaluationPolicy,
+    compare_candidate, compute_multidimensional_metrics, evaluate_versions, group_by_prompt_version,
+    group_by_strategy, group_by_symbol, metrics_for, EvaluationPolicy, MultidimensionalMetrics,
     StrategyMetrics, Verdict,
 };
 pub use experience_writer::ExperienceWriter;
+pub use hooks::{
+    DailyDrawdownGuardHook, HookAction, HookPipeline, HookRejection, PostOutcomeContext,
+    PreAnalysisContext, PreExecutionContext, ShadowPosition, ShadowTradingHook, TradingHook,
+};
+pub use reflector::{FailureAttribution, Proposal, Proposer, StrategyReflector};
+pub use replay_evaluator::ReplayEvaluator;
+pub use trade2episode::Trade2Episode;
 pub use feedback::{
     qualify, ExitReason, Excursion, QualificationPolicy, TradeOutcome, PNL_SOURCE_BROKER,
     PNL_SOURCE_MODEL,

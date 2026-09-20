@@ -260,6 +260,8 @@ pub struct ReconcileReport {
     pub experiences_written: usize,
     pub skipped_existing: usize,
     pub errors: Vec<String>,
+    #[serde(skip)]
+    pub newly_resolved: Vec<TradeOutcome>,
 }
 
 impl ReconcileReport {
@@ -328,6 +330,7 @@ impl Reconciler {
                         report.errors.push(format!("{} 保存结果失败: {e:#}", entry.signal_id));
                         continue;
                     }
+                    report.newly_resolved.push(outcome.clone());
                     if write_experience {
                         match self.experience.record(&outcome) {
                             Ok(Some(_)) => report.experiences_written += 1,
@@ -360,15 +363,43 @@ impl Reconciler {
         max_hold_bars: u32,
     ) -> anyhow::Result<Option<TradeOutcome>> {
         // A failed lookup must not be silently treated as "unfilled".
-        let order = self
-            .client
-            .get_order(&entry.instrument, Some(&entry.order_id), None)
-            .await
-            .map_err(|e| anyhow::anyhow!("查询订单状态失败: {e:#}"))?;
+        let is_algo = entry.order_type == "突破单"
+            || entry.order_type == "trigger"
+            || entry.order_type.to_lowercase().contains("algo");
+        let order = if is_algo {
+            match self.client.get_algo_order(Some(&entry.order_id), None).await {
+                Ok(algo) => {
+                    let state = algo.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                    if state == "effective" {
+                        if let Some(ord_id) = algo.get("ordId").and_then(|s| s.as_str()).filter(|s| !s.is_empty()) {
+                            self.client.get_order(&entry.instrument, Some(ord_id), None).await.unwrap_or(algo)
+                        } else {
+                            algo
+                        }
+                    } else {
+                        algo
+                    }
+                }
+                Err(_) => {
+                    self.client.get_order(&entry.instrument, Some(&entry.order_id), None).await
+                        .map_err(|e| anyhow::anyhow!("查询订单状态失败: {e:#}"))?
+                }
+            }
+        } else {
+            match self.client.get_order(&entry.instrument, Some(&entry.order_id), None).await {
+                Ok(ord) => ord,
+                Err(_) => {
+                    // Fall back to algo order lookup in case it was an algo order
+                    self.client.get_algo_order(Some(&entry.order_id), None).await
+                        .map_err(|e| anyhow::anyhow!("查询订单状态失败: {e:#}"))?
+                }
+            }
+        };
 
         let state_str = order.get("state").and_then(|s| s.as_str()).unwrap_or("").to_string();
         let acc = order
             .get("accFillSz")
+            .or_else(|| order.get("actualSz"))
             .and_then(|s| s.as_str())
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
@@ -379,10 +410,11 @@ impl Reconciler {
             .unwrap_or(0.0);
         let avg_px = order
             .get("avgPx")
+            .or_else(|| order.get("actualPx"))
             .and_then(|s| s.as_str())
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|p| *p > 0.0);
-        let filled = state_str == "filled" || (state_str == "partially_filled" && acc > 0.0);
+        let filled = state_str == "filled" || state_str == "effective" || acc > 0.0;
         let fill_ratio = if sz > 0.0 {
             (acc / sz).clamp(0.0, 1.0)
         } else if filled {
@@ -410,6 +442,16 @@ impl Reconciler {
             Vec::new()
         };
 
+        let size = if filled && acc > 0.0 {
+            acc
+        } else {
+            entry
+                .size
+                .as_ref()
+                .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                .unwrap_or(0.0)
+        };
+
         let input = ResolutionInput {
             signal_id: &entry.signal_id,
             context,
@@ -419,7 +461,7 @@ impl Reconciler {
             entry: entry_px,
             stop: stop_px,
             target: target_px,
-            size: entry.size.as_ref().and_then(|v| v.as_f64()).unwrap_or(0.0),
+            size,
             filled,
             fill_ratio,
             created_ms: entry.timestamp_ms,
@@ -464,7 +506,11 @@ impl Reconciler {
 }
 
 fn price_levels(entry: &AuditEntry, avg_px: Option<f64>) -> (f64, f64, f64) {
-    let num = |v: &Option<serde_json::Value>| v.as_ref().and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let num = |v: &Option<serde_json::Value>| {
+        v.as_ref()
+            .and_then(|x| x.as_f64().or_else(|| x.as_str()?.parse().ok()))
+            .unwrap_or(0.0)
+    };
     let entry_px = avg_px.unwrap_or_else(|| num(&entry.price));
     (entry_px, num(&entry.stop_loss_price), num(&entry.take_profit_price))
 }

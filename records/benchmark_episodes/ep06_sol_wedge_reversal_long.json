@@ -1,0 +1,18 @@
+{
+  "episode_id": "ep06_sol_wedge_reversal_long",
+  "symbol": "SOL-USDT-SWAP",
+  "timeframe": "15m",
+  "market_regime": "broad_channel",
+  "description": "SOL 15m 下跌末端完成楔形三推衰竭底 (Wedge Bottom)，收出强反转信号棒，做多博取波段反弹",
+  "expected_action": "OPEN_LONG",
+  "benchmark_r": 2.5,
+  "kline_data": [
+    { "seq": 1, "ts_open": 1700500000000, "open": 140.0, "high": 144.5, "low": 139.5, "close": 144.0, "volume": 12000.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 2, "ts_open": 1700499100000, "open": 142.0, "high": 142.5, "low": 139.0, "close": 140.0, "volume": 9800.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 3, "ts_open": 1700498200000, "open": 145.0, "high": 145.2, "low": 141.5, "close": 142.0, "volume": 8500.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ],
+  "future_bars": [
+    { "seq": 0, "ts_open": 1700500900000, "open": 144.0, "high": 148.0, "low": 143.5, "close": 147.5, "volume": 14000.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 0, "ts_open": 1700501800000, "open": 147.5, "high": 152.0, "low": 147.0, "close": 151.5, "volume": 18000.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ]
+}

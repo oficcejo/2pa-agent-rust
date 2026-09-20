@@ -184,8 +184,13 @@ pub struct LearningSettings {
     pub eval_min_expectancy_delta_r: f64,
     #[serde(default = "default_eval_max_win_rate_drop")]
     pub eval_max_win_rate_drop: f64,
+    #[serde(default = "default_drawdown_limit")]
+    pub daily_drawdown_limit_usd: f64,
+    #[serde(default)]
+    pub shadow_trading_enabled: bool,
 }
 
+fn default_drawdown_limit() -> f64 { 500.0 }
 fn default_reconcile_interval() -> u64 { 60 }
 fn default_max_hold_bars() -> u32 { 96 }
 fn default_lookback_hours() -> i64 { 72 }
@@ -210,6 +215,8 @@ impl Default for LearningSettings {
             eval_min_samples: default_eval_min_samples(),
             eval_min_expectancy_delta_r: 0.0,
             eval_max_win_rate_drop: default_eval_max_win_rate_drop(),
+            daily_drawdown_limit_usd: default_drawdown_limit(),
+            shadow_trading_enabled: false,
         }
     }
 }
@@ -385,7 +392,14 @@ impl Settings {
             if let Ok(num) = v.trim().parse::<u64>() { settings.provider.stage_timeout_seconds = num; }
         }
         if let Ok(v) = std::env::var("TRADING_SYSTEM").or_else(|_| std::env::var("AI_TRADING_SYSTEM")) {
-            if !v.trim().is_empty() { settings.general.trading_system = v.trim().to_string(); }
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                if trimmed.eq_ignore_ascii_case("alpha_pilot") {
+                    settings.general.trading_system = "2pa_trend".to_string();
+                } else {
+                    settings.general.trading_system = trimmed.to_string();
+                }
+            }
         }
 
         if let Ok(v) = std::env::var("OKX_API_KEY") {
@@ -460,6 +474,16 @@ impl Settings {
         }
         if let Ok(v) = std::env::var("LEARNING_MAX_HOLD_BARS") {
             if let Ok(num) = v.trim().parse::<u32>() { settings.learning.max_hold_bars = num.max(1); }
+        }
+        if let Ok(v) = std::env::var("DAILY_DRAWDOWN_LIMIT_USD")
+            .or_else(|_| std::env::var("LEARNING_DAILY_DRAWDOWN_LIMIT_USD"))
+        {
+            if let Ok(num) = v.trim().parse::<f64>() { settings.learning.daily_drawdown_limit_usd = num.abs(); }
+        }
+        if let Ok(v) = std::env::var("SHADOW_TRADING_ENABLED")
+            .or_else(|_| std::env::var("LEARNING_SHADOW_TRADING_ENABLED"))
+        {
+            settings.learning.shadow_trading_enabled = v.trim().eq_ignore_ascii_case("true") || v.trim() == "1";
         }
 
         settings

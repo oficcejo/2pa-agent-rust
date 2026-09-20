@@ -1,0 +1,18 @@
+{
+  "episode_id": "ep03_btc_trading_range_wait",
+  "symbol": "BTC-USDT-SWAP",
+  "timeframe": "15m",
+  "market_regime": "trading_range",
+  "description": "BTC 15m 震荡区间中央重叠严重（铁丝网行情），无边界盈亏比，严格观望",
+  "expected_action": "WAIT",
+  "benchmark_r": 0.0,
+  "kline_data": [
+    { "seq": 1, "ts_open": 1700200000000, "open": 61000.0, "high": 61050.0, "low": 60950.0, "close": 61010.0, "volume": 300.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 2, "ts_open": 1700199100000, "open": 61020.0, "high": 61080.0, "low": 60960.0, "close": 61000.0, "volume": 320.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 3, "ts_open": 1700198200000, "open": 60980.0, "high": 61060.0, "low": 60940.0, "close": 61020.0, "volume": 280.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ],
+  "future_bars": [
+    { "seq": 0, "ts_open": 1700200900000, "open": 61010.0, "high": 61040.0, "low": 60970.0, "close": 61000.0, "volume": 250.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 0, "ts_open": 1700201800000, "open": 61000.0, "high": 61030.0, "low": 60960.0, "close": 60990.0, "volume": 240.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "episode_id": "ep01_btc_spike_long",
+  "symbol": "BTC-USDT-SWAP",
+  "timeframe": "15m",
+  "market_regime": "spike",
+  "description": "BTC 15m 强多头突破急速，EMA20 上行，出现连续同向大阳线",
+  "expected_action": "OPEN_LONG",
+  "benchmark_r": 2.0,
+  "kline_data": [
+    { "seq": 1, "ts_open": 1700000000000, "open": 60000.0, "high": 60600.0, "low": 59950.0, "close": 60550.0, "volume": 1200.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 2, "ts_open": 1699999100000, "open": 59600.0, "high": 60050.0, "low": 59580.0, "close": 60000.0, "volume": 1100.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 3, "ts_open": 1699998200000, "open": 59200.0, "high": 59650.0, "low": 59180.0, "close": 59600.0, "volume": 950.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ],
+  "future_bars": [
+    { "seq": 0, "ts_open": 1700000900000, "open": 60550.0, "high": 60900.0, "low": 60450.0, "close": 60850.0, "volume": 1050.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 0, "ts_open": 1700001800000, "open": 60850.0, "high": 61300.0, "low": 60780.0, "close": 61250.0, "volume": 1300.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 0, "ts_open": 1700002700000, "open": 61250.0, "high": 61800.0, "low": 61150.0, "close": 61750.0, "volume": 1500.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ]
+}

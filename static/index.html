@@ -61,9 +61,8 @@
           <select id="tradingSystemSelect">
             <option value="2pa_trend" selected>📊 2PA 趋势确认</option>
             <option value="dog_reversion">🐕 遛狗偏离回归</option>
-<option value="dog_trend">🐕 遛狗顺势回踩</option>
+            <option value="dog_trend">🐕 遛狗顺势回踩</option>
             <option value="adaptive">🧠 自适应观察（不开新仓）</option>
-            <option value="alpha_pilot">⚡ AlphaPilot 量化因子</option>
           </select>
         </label>
         <button id="refreshButton" class="icon-button" title="刷新行情" aria-label="刷新行情">↻</button>
@@ -122,6 +121,7 @@
         <button data-tab="contract">📐 合约换算</button>
         <button data-tab="automation" class="tab-highlight">🤖 自动交易</button>
         <button data-tab="learning">🧠 持续学习</button>
+        <button data-tab="backtest">📊 策略回测</button>
       </nav>
 
       <div id="decisionTab" class="tab-content active">
@@ -451,6 +451,26 @@
             <div><small>胜率</small><b id="learningWinRate">—</b></div>
           </section>
 
+          <section class="session-section" style="margin-bottom:12px;">
+            <div class="session-head">
+              <div><h2>🛡️ 生命周期风控与影子交易</h2><span id="lifecycleHookHint">监控中</span></div>
+              <span id="circuitBreakerBadge" class="session-state">正常</span>
+            </div>
+            <div class="spec-meta-grid">
+              <div><small>单日累计亏损</small><b id="drawdownCurrent">$0.00</b></div>
+              <div><small>单日熔断限额</small><b id="drawdownLimit">$500.00</b></div>
+              <div><small>影子撮合中</small><b id="shadowActiveCount">0 笔</b></div>
+              <div><small>影子已结算</small><b id="shadowClosedCount">0 笔</b></div>
+            </div>
+            <div class="session-foot">
+              <span id="circuitBreakerNote">单日累计亏损未达熔断线</span>
+              <div class="learning-actions">
+                <button id="toggleShadowBtn" class="small-action" type="button">切换影子模式</button>
+                <button id="resetCircuitBreakerBtn" class="small-action" type="button">重置熔断器</button>
+              </div>
+            </div>
+          </section>
+
           <section class="session-section">
             <div class="session-head">
               <div><h2>当前策略提示词版本</h2><span id="learningPromptHint">—</span></div>
@@ -465,10 +485,18 @@
             <div class="session-foot">
               <span id="learningRuntimeNote">—</span>
               <div class="learning-actions">
+                <button id="learningProposeBtn" class="small-action" type="button" title="从失败归因自动生成反思突变候选版本">⚡ 反思突变 (GEPA)</button>
                 <button id="learningReconcile" class="small-action" type="button">立即对账</button>
                 <button id="learningRollback" class="small-action" type="button">回退上一版本</button>
               </div>
             </div>
+          </section>
+
+          <section class="history-section">
+            <div class="history-head">
+              <div><h2>📊 多维切片统计指标 (策略/标的分流)</h2><span id="multidimMetricsCount">多维分流</span></div>
+            </div>
+            <div id="multidimMetrics" class="history-list"></div>
           </section>
 
           <section class="history-section">
@@ -491,9 +519,197 @@
             </div>
             <div id="learningExperience" class="history-list"></div>
           </section>
+
+          <section class="history-section">
+            <div class="history-head">
+              <div><h2>📂 离线基准测试切片库 (Benchmark Episodes)</h2><span id="benchmarkEpisodeCount">0 个</span></div>
+            </div>
+            <div id="benchmarkEpisodes" class="history-list"></div>
+          </section>
         </div>
 
-        <p class="notice">学习闭环默认关闭。开启后程序会定期把已提交订单与交易所成交结果对账，生成结构化反馈（R 倍数、MFE/MAE、持仓时长、费用）并写入经验库。策略提示词以带版本的 artifact 管理，候选版本须通过选择性发布校验才能启用；程序不会自动把新策略投入实盘，盈亏标注为「模型估算」时表示由价格与仓位推导，并非交易所对账数据。</p>
+      </div>
+
+      <div id="backtestTab" class="tab-content">
+        <div class="section-title">
+          <div>
+            <h2>📊 策略全流程回测</h2>
+            <span class="sub-label">纯 Rust 驱动 · 程序化放行短路 · 零未来函数与真实合约费率滑点</span>
+          </div>
+        </div>
+
+        <!-- 回测配置控制台 -->
+        <section class="session-section" style="margin-top:10px;">
+          <div class="session-head">
+            <div><h2>回测参数配置</h2></div>
+            <div class="preset-buttons">
+              <button id="btPreset7d" class="small-action" type="button" title="快速设置回测最近 7 天 (约 672 根 15m K 线)">7 天</button>
+              <button id="btPreset30d" class="small-action" type="button" title="快速设置回测最近 30 天 (约 2880 根 15m K 线)">30 天</button>
+              <button id="btPreset90d" class="small-action" type="button" title="快速设置回测 1000 根 K 线">1000 根</button>
+            </div>
+          </div>
+
+          <div class="bt-form-grid">
+            <label>交易策略
+              <select id="btStrategy">
+                <option value="2pa_trend" selected>📊 2PA 趋势确认</option>
+                <option value="dog_reversion">🐕 遛狗偏离回归</option>
+                <option value="dog_trend">🐕 遛狗顺势回踩</option>
+              </select>
+            </label>
+
+            <label>数据源
+              <select id="btDataSource">
+                <option value="okx_api" selected>🌐 OKX 实时历史行情</option>
+                <option value="synthetic">🧪 内置高质量仿真行情 (离线)</option>
+              </select>
+            </label>
+
+            <label>合约标的
+              <input id="btSymbol" value="BTC-USDT-SWAP" autocomplete="off">
+            </label>
+
+            <label>周期
+              <select id="btTimeframe">
+                <option value="15m" selected>15m</option>
+                <option value="1h">1h</option>
+                <option value="4h">4h</option>
+              </select>
+            </label>
+
+            <label>K 线根数
+              <input id="btMaxBars" type="number" value="1000" min="150" max="3000" step="50">
+            </label>
+
+            <label>初始本金 (USDT)
+              <input id="btInitialCapital" type="number" value="10000" min="100" step="500">
+            </label>
+
+            <label>单笔风险 (%)
+              <input id="btRiskPct" type="number" value="1.0" min="0.1" max="10" step="0.1">
+            </label>
+
+            <label>开仓杠杆
+              <input id="btLeverage" type="number" value="5" min="1" max="50" step="1">
+            </label>
+
+            <label>保证金上限 (%)
+              <input id="btMaxMarginPct" type="number" value="50" min="5" max="100" step="5">
+            </label>
+
+            <label>起始时间 (可选)
+              <input id="btStartDate" type="datetime-local" title="可选指定回测开始时间">
+            </label>
+
+            <label>结束时间 (可选)
+              <input id="btEndDate" type="datetime-local" title="可选指定回测结束时间">
+            </label>
+          </div>
+
+          <div class="bt-toggles-row">
+            <label class="execute-check" title="使用 reconciler 模拟保守止损/止盈/超时出场（同一根 K 线内止损优先）">
+              <input id="btUseMechanicalExit" type="checkbox" checked> 机械化硬出场 (SL/TP)
+            </label>
+            <label class="execute-check" title="状态指纹缓存：复用已推理的 LLM 决策，二次运行零 Token 消耗并极速完成">
+              <input id="btUseCache" type="checkbox" checked> 状态决策缓存
+            </label>
+            <label class="execute-check" title="若关闭则完全使用规则与诊断证据驱动回测，无需 LLM API Key">
+              <input id="btAllowLlm" type="checkbox"> 开启实时 LLM 推理
+            </label>
+          </div>
+
+          <button id="btRunBtn" class="primary" style="width:100%;margin-top:12px;height:38px;font-size:14px;" type="button">
+            🚀 开始策略回测
+          </button>
+        </section>
+
+        <!-- 回测运行进度状态条 -->
+        <div id="btStatusBox" class="bt-status-card" hidden>
+          <div class="bt-status-header">
+            <strong id="btStatusState">正在回测中...</strong>
+            <span id="btStatusPercent">0%</span>
+          </div>
+          <div class="bt-progress-bar">
+            <div id="btProgressBarFill" style="width:0%"></div>
+          </div>
+          <small id="btStatusMsg">初始化回测引擎...</small>
+        </div>
+
+        <!-- KPI 核心指标卡片 -->
+        <section id="btKpiSection" class="bt-kpis-grid" hidden>
+          <div class="bt-kpi-card">
+            <small>净利润</small>
+            <strong id="btKpiNetProfit">—</strong>
+            <span id="btKpiNetProfitPct" class="bt-kpi-sub">—</span>
+          </div>
+          <div class="bt-kpi-card">
+            <small>最大回撤</small>
+            <strong id="btKpiMaxDd">—</strong>
+            <span id="btKpiMaxDdPct" class="bt-kpi-sub">—</span>
+          </div>
+          <div class="bt-kpi-card">
+            <small>夏普比率 (年化)</small>
+            <strong id="btKpiSharpe">—</strong>
+            <span id="btKpiSortino" class="bt-kpi-sub">索提诺: —</span>
+          </div>
+          <div class="bt-kpi-card">
+            <small>交易胜率</small>
+            <strong id="btKpiWinRate">—</strong>
+            <span id="btKpiTradeCounts" class="bt-kpi-sub">—</span>
+          </div>
+          <div class="bt-kpi-card">
+            <small>期望盈亏比 (R)</small>
+            <strong id="btKpiExpectancyR">—</strong>
+            <span id="btKpiProfitFactor" class="bt-kpi-sub">盈亏比: —</span>
+          </div>
+          <div class="bt-kpi-card">
+            <small>过滤短路率</small>
+            <strong id="btKpiGated">—</strong>
+            <span id="btKpiCacheHits" class="bt-kpi-sub">缓存命中: —</span>
+          </div>
+        </section>
+
+        <!-- 收益曲线与水下回撤双轨 Canvas 图表 -->
+        <section id="btChartSection" class="session-section" style="margin-top:14px;" hidden>
+          <div class="session-head">
+            <div><h2>总权益曲线 & 水下回撤</h2><span id="btChartSummary">双轨对齐</span></div>
+          </div>
+          <div class="bt-dual-chart">
+            <canvas id="btDualCanvas"></canvas>
+            <div id="btChartEmpty" class="chart-placeholder">等待回测生成图表</div>
+          </div>
+          <div class="bt-chart-legend">
+            <span class="legend-item equity-line">● 账户总权益 (USDT)</span>
+            <span class="legend-item drawdown-line">● 水下回撤比例 (%)</span>
+          </div>
+        </section>
+
+        <!-- 成交记录列表 -->
+        <section id="btTradesSection" class="history-section" style="margin-top:14px;" hidden>
+          <div class="history-head">
+            <div><h2>回测成交记录</h2><span id="btTradeCount">0 笔</span></div>
+            <div class="bt-table-filters">
+              <button type="button" class="small-action active" data-filter="all">全部</button>
+              <button type="button" class="small-action" data-filter="win">盈利</button>
+              <button type="button" class="small-action" data-filter="loss">亏损</button>
+            </div>
+          </div>
+          <div class="compact-table-wrap">
+            <table class="compact-table bt-trades-table">
+              <thead>
+                <tr>
+                  <th>时间 / 标的</th>
+                  <th>方向</th>
+                  <th>开/平价格</th>
+                  <th>数量/持仓</th>
+                  <th>盈亏 (USDT)</th>
+                  <th>R / 原因</th>
+                </tr>
+              </thead>
+              <tbody id="btTradesBody"></tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </aside>
   </main>
@@ -519,7 +735,6 @@
                 <option value="dog_reversion">🐕 遛狗偏离回归</option>
 <option value="dog_trend">🐕 遛狗顺势回踩</option>
                 <option value="adaptive">🧠 自适应观察（不开新仓）</option>
-                <option value="alpha_pilot">⚡ AlphaPilot 量化因子系统 (纯数学免 Token 策略)</option>
               </select>
             </label>
           </div>

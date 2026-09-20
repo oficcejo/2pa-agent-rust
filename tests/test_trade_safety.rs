@@ -255,7 +255,7 @@ async fn private_routes_require_auth_and_reject_cross_site_writes() {
 async fn execution_disabled_is_rejected_before_any_network_request() {
     let service = WebTradingService::new(Settings::default());
     let err = service
-        .analyze("TEST-USDT-SWAP", "15m", 100, true, Some("alpha_pilot"))
+        .analyze("TEST-USDT-SWAP", "15m", 100, true, Some("2pa_trend"))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("凭据未配置"));
@@ -387,13 +387,4 @@ async fn moved_market_price_invalidates_old_stop_before_submission() {
         .all(|(m, _, _)| m == "GET"));
 }
 
-#[test]
-fn rolling_normalization_is_causal_across_warmup_boundary() {
-    use okx_2pa_agent::indicators::alpha_pilot::rolling_zscore_500;
-    let prefix: Vec<_> = (0..499).map(|i| (i as f64).sin()).collect();
-    let before = rolling_zscore_500(&prefix);
-    let mut extended = prefix.clone();
-    extended.extend([1000.0, -1000.0]);
-    let after = rolling_zscore_500(&extended);
-    assert_eq!(before, &after[..499]);
-}
+

@@ -1,0 +1,18 @@
+{
+  "episode_id": "ep02_eth_tight_channel_long",
+  "symbol": "ETH-USDT-SWAP",
+  "timeframe": "15m",
+  "market_regime": "tight_channel",
+  "description": "ETH 15m 窄通道顺势多头，回踩 EMA20 产生 H2 二次入场信号",
+  "expected_action": "OPEN_LONG",
+  "benchmark_r": 2.2,
+  "kline_data": [
+    { "seq": 1, "ts_open": 1700100000000, "open": 3200.0, "high": 3225.0, "low": 3195.0, "close": 3220.0, "volume": 5000.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 2, "ts_open": 1700099100000, "open": 3205.0, "high": 3210.0, "low": 3190.0, "close": 3200.0, "volume": 3200.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 3, "ts_open": 1700098200000, "open": 3190.0, "high": 3215.0, "low": 3185.0, "close": 3205.0, "volume": 4100.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ],
+  "future_bars": [
+    { "seq": 0, "ts_open": 1700100900000, "open": 3220.0, "high": 3250.0, "low": 3215.0, "close": 3245.0, "volume": 4800.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 0, "ts_open": 1700101800000, "open": 3245.0, "high": 3280.0, "low": 3240.0, "close": 3275.0, "volume": 6200.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ]
+}

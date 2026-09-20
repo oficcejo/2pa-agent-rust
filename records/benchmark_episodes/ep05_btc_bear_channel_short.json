@@ -1,0 +1,18 @@
+{
+  "episode_id": "ep05_btc_bear_channel_short",
+  "symbol": "BTC-USDT-SWAP",
+  "timeframe": "15m",
+  "market_regime": "tight_channel",
+  "description": "BTC 15m 空头下降通道，反弹触及 EMA20 遇阻收出强阴信号棒，L2 二次入场做空",
+  "expected_action": "OPEN_SHORT",
+  "benchmark_r": 2.1,
+  "kline_data": [
+    { "seq": 1, "ts_open": 1700400000000, "open": 58200.0, "high": 58250.0, "low": 57800.0, "close": 57850.0, "volume": 1400.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 2, "ts_open": 1700399100000, "open": 58000.0, "high": 58300.0, "low": 57950.0, "close": 58200.0, "volume": 980.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 3, "ts_open": 1700398200000, "open": 58400.0, "high": 58450.0, "low": 57900.0, "close": 58000.0, "volume": 1250.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ],
+  "future_bars": [
+    { "seq": 0, "ts_open": 1700400900000, "open": 57850.0, "high": 57900.0, "low": 57300.0, "close": 57350.0, "volume": 1600.0, "amount": 0.0, "pct_chg": null, "closed": true },
+    { "seq": 0, "ts_open": 1700401800000, "open": 57350.0, "high": 57400.0, "low": 56800.0, "close": 56900.0, "volume": 1900.0, "amount": 0.0, "pct_chg": null, "closed": true }
+  ]
+}

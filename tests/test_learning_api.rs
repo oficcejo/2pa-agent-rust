@@ -16,8 +16,10 @@ use tower::ServiceExt;
 const TOKEN: &str = "test-token-abcdefghijklmnopqrst";
 
 fn app() -> axum::Router {
-    let mut settings = Settings::default();
-    settings.web_auth_token = TOKEN.to_string();
+    let settings = Settings {
+        web_auth_token: TOKEN.to_string(),
+        ..Default::default()
+    };
     create_router(Arc::new(WebTradingService::new(settings)))
 }
 
@@ -146,3 +148,80 @@ async fn write_endpoints_reject_non_json_requests() {
     let response = app().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn circuit_breaker_reset_and_status_metrics_work() {
+    let router = app();
+    let res = router.clone().oneshot(get("/api/status", true)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let status_body = json_body(res).await;
+    assert_eq!(status_body["circuit_breaker"]["tripped"], false);
+    assert_eq!(status_body["circuit_breaker"]["max_loss_usd"], 500.0);
+    assert_eq!(status_body["shadow_trading"]["enabled"], false);
+
+    let reset_res = router.oneshot(post_json("/api/learning/circuit_breaker/reset", "{}")).await.unwrap();
+    assert_eq!(reset_res.status(), StatusCode::OK);
+    let reset_body = json_body(reset_res).await;
+    assert_eq!(reset_body["reset"], true);
+    assert_eq!(reset_body["tripped"], false);
+}
+
+#[tokio::test]
+async fn benchmark_episodes_endpoint_returns_list() {
+    let response = app().oneshot(get("/api/learning/benchmark_episodes", true)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert!(body.is_array());
+    let episodes = body.as_array().unwrap();
+    assert!(episodes.len() >= 2, "Seeded benchmark suites should contain episodes");
+}
+
+#[tokio::test]
+async fn shadow_trading_toggle_endpoint_works() {
+    let router = app();
+    let res1 = router.clone().oneshot(post_json("/api/learning/shadow_trading/toggle", "{}")).await.unwrap();
+    assert_eq!(res1.status(), StatusCode::OK);
+    let body1 = json_body(res1).await;
+    assert_eq!(body1["enabled"], true);
+
+    let res2 = router.oneshot(post_json("/api/learning/shadow_trading/toggle", "{}")).await.unwrap();
+    assert_eq!(res2.status(), StatusCode::OK);
+    let body2 = json_body(res2).await;
+    assert_eq!(body2["enabled"], false);
+}
+
+#[tokio::test]
+async fn propose_endpoint_errors_when_no_failures() {
+    let response = app().oneshot(post_json("/api/learning/propose", "{}")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let text = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), 1 << 16).await.unwrap().to_vec(),
+    ).unwrap();
+    assert!(text.contains("失败交易样本") || text.contains("无可用于生成反思突变"), "{text}");
+}
+
+#[tokio::test]
+async fn solidify_episode_endpoint_errors_for_unknown_signal() {
+    let response = app().oneshot(post_json(
+        "/api/learning/solidify_episode",
+        &serde_json::json!({"signal_id": "non_existent_signal_12345"}).to_string(),
+    )).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let text = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), 1 << 16).await.unwrap().to_vec(),
+    ).unwrap();
+    assert!(text.contains("未找到交易结果"), "{text}");
+}
+
+#[tokio::test]
+async fn learning_report_contains_multidimensional_metrics() {
+    let response = app().oneshot(get("/api/learning/report", true)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+
+    assert!(body["multidimensional"].is_object(), "report must include multidimensional metrics");
+    assert!(body["multidimensional"]["overall"].is_object());
+    assert!(body["multidimensional"]["by_strategy"].is_object());
+    assert!(body["multidimensional"]["by_symbol"].is_object());
+}
+

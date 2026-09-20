@@ -1,0 +1,53 @@
+﻿cargo :     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+At line:2 char:1
++ cargo test --test test_review_regressions -- --ignored --nocapture 2> ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Finished `t...get(s) in 0.34s:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+     Running tests\test_review_regressions.rs (target\debug\deps\test_review_regressions-ea00f328c3d43043.exe)
+
+running 6 tests
+
+thread 'jump_history_must_not_change_when_future_bars_are_appended' (15972) panicked at tests\test_review_regressions.r
+s:174:5:
+historical jump changed after adding a future value: -0.000002999994000098975 -> -0.9587641720337696
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test jump_history_must_not_change_when_future_bars_are_appended ... FAILED
+
+thread 'signal_older_than_120_seconds_must_expire' (10620) panicked at tests\test_review_regressions.rs:159:5:
+3-minute-old signal passed 120-second gate: 交易信心度 0% 低于设定风控门槛 40%
+test signal_older_than_120_seconds_must_expire ... FAILED
+
+thread 'minimum_lot_must_not_override_risk_budget' (10532) panicked at tests\test_review_regressions.rs:99:5:
+risk budget is $2 but minimum lot risks $50: Ok(1)
+
+thread 'zero_available_margin_must_block_new_size' (15484) panicked at tests\test_review_regressions.rs:143:5:
+no available margin must not use $100 total equity: Ok(0.75)
+
+thread 'minimum_lot_must_not_override_margin_budget' (13308) panicked at tests\test_review_regressions.rs:121:5:
+margin budget is $25 but minimum lot needs $33.33: Ok(1)
+test minimum_lot_must_not_override_risk_budget ... FAILED
+test minimum_lot_must_not_override_margin_budget ... FAILED
+test zero_available_margin_must_block_new_size ... FAILED
+
+thread 'alpha_decision_exposes_executor_confidence' (15804) panicked at tests\test_review_regressions.rs:77:5:
+executor cannot read: {"action":"OPEN","confidence":74,"entry_price":90.1,"estimated_win_rate":60,"order_direction":"做多
+","order_type":"市价单","reasoning":"AlphaPilot 符号量化因子评估: 滚动标准化 Z-Score=0.9598, 目标仓位=0.74 (做多 73.6%)。\n- Rogers-Satchell 波
+动率归一化: 0.9992 (异动跳跃: 常态)\n- SuperTrend 趋势状态: 空头趋势 (-1.0) (上轨: 96.00, 下轨: 84.00)\n- 中性过滤状态: 已突破中性区间，有效入场 (下限 0.25, 上限 0.
+75)","risk_reward_ratio":2.0,"stop_loss_price":84.0,"take_profit_price":102.29999999999998}
+test alpha_decision_exposes_executor_confidence ... FAILED
+
+failures:
+
+failures:
+    alpha_decision_exposes_executor_confidence
+    jump_history_must_not_change_when_future_bars_are_appended
+    minimum_lot_must_not_override_margin_budget
+    minimum_lot_must_not_override_risk_budget
+    signal_older_than_120_seconds_must_expire
+    zero_available_margin_must_block_new_size
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+error: test failed, to rerun pass `--test test_review_regressions`

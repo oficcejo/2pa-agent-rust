@@ -81,6 +81,13 @@ pub struct SaveEnvRequest {
     pub okx_trade_mode: String,
     #[serde(default = "default_position_mode")]
     pub okx_position_mode: String,
+
+    #[serde(default)]
+    pub learning_enabled: Option<bool>,
+    #[serde(default)]
+    pub learning_daily_drawdown_limit_usd: Option<f64>,
+    #[serde(default)]
+    pub learning_shadow_trading_enabled: Option<bool>,
 }
 
 fn default_risk_percent() -> f64 { 2.0 }
@@ -114,6 +121,12 @@ fn stamp_receipt(decision: &mut Value, record: &crate::records::schema::Analysis
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BacktestJobRecord {
+    pub status: crate::backtest::types::BacktestJobStatus,
+    pub report: Option<crate::backtest::types::BacktestReport>,
+}
+
 pub struct WebTradingService {
     pub settings: Arc<RwLock<Settings>>,
     pub okx_client: Arc<RwLock<OKXClient>>,
@@ -134,6 +147,11 @@ pub struct WebTradingService {
     pub experience_writer: ExperienceWriter,
     pub prompt_store: PromptArtifactStore,
     pub learning_runtime: Arc<RwLock<LearningRuntime>>,
+    pub hook_pipeline: Arc<RwLock<crate::learning::HookPipeline>>,
+    pub shadow_hook: Arc<crate::learning::ShadowTradingHook>,
+    pub drawdown_guard: Arc<crate::learning::DailyDrawdownGuardHook>,
+    pub backtest_jobs: Arc<RwLock<HashMap<String, BacktestJobRecord>>>,
+    pub decision_cache: crate::backtest::cache::DecisionCache,
 }
 
 impl WebTradingService {
@@ -185,7 +203,23 @@ impl WebTradingService {
             Some(&settings.okx.automation_session_weekdays),
         );
 
-        let initial_system = settings.general.trading_system.clone();
+        let initial_system = if settings.general.trading_system.trim().eq_ignore_ascii_case("alpha_pilot") {
+            "2pa_trend".to_string()
+        } else {
+            settings.general.trading_system.clone()
+        };
+
+        let drawdown_limit = settings.learning.daily_drawdown_limit_usd;
+        let drawdown_guard = Arc::new(crate::learning::DailyDrawdownGuardHook::new(drawdown_limit));
+        if let Ok(tz) = settings.okx.automation_session_timezone.parse::<chrono_tz::Tz>() {
+            use chrono::Offset;
+            let offset_sec = chrono::Utc::now().with_timezone(&tz).offset().fix().local_minus_utc();
+            drawdown_guard.set_timezone_offset_ms((offset_sec as i64) * 1000);
+        }
+        let shadow_hook = Arc::new(crate::learning::ShadowTradingHook::new());
+        let mut pipeline = crate::learning::HookPipeline::new();
+        pipeline.add_hook(drawdown_guard.clone());
+        pipeline.add_hook(shadow_hook.clone());
 
         Self {
             settings: Arc::new(RwLock::new(settings)),
@@ -207,6 +241,11 @@ impl WebTradingService {
             experience_writer: ExperienceWriter::new(crate::config::paths::experience_dir()),
             prompt_store: PromptArtifactStore::new(crate::config::paths::prompt_artifacts_dir()),
             learning_runtime: Arc::new(RwLock::new(LearningRuntime::default())),
+            hook_pipeline: Arc::new(RwLock::new(pipeline)),
+            shadow_hook,
+            drawdown_guard,
+            backtest_jobs: Arc::new(RwLock::new(HashMap::new())),
+            decision_cache: crate::backtest::cache::DecisionCache::new(None),
         }
     }
 
@@ -248,11 +287,6 @@ impl WebTradingService {
                     "id": "adaptive",
                     "name": "🧠 自适应观察模式（不开新仓）",
                     "description": "仅观察，待三个独立策略积累成交验证后再评估切换"
-                },
-                {
-                    "id": "alpha_pilot",
-                    "name": "⚡ AlphaPilot 量化因子系统",
-                    "description": "基于 Rogers-Satchell 波动率跳跃与 SuperTrend 突破的纯数学量化 Alpha，0 Token 延迟"
                 }
             ],
             "confidence_threshold": settings.general.decision_confidence_threshold,
@@ -268,6 +302,16 @@ impl WebTradingService {
             "automation_session": session.as_dict(Some(Utc::now())),
             "automation_runtime": self.automation_runtime.read().clone(),
             "automation_session_presets": crate::web::sessions::session_preset_options(),
+            "circuit_breaker": {
+                "tripped": self.drawdown_guard.is_tripped(),
+                "current_drawdown_usd": self.drawdown_guard.current_drawdown_usd(),
+                "max_loss_usd": self.drawdown_guard.max_loss_usd(),
+            },
+            "shadow_trading": {
+                "enabled": settings.learning.shadow_trading_enabled,
+                "active_positions": self.shadow_hook.active_positions().len(),
+                "closed_outcomes": self.shadow_hook.closed_outcomes().len(),
+            },
             "latest": latest,
         })
     }
@@ -357,6 +401,11 @@ OKX_MAX_PENDING_BARS=3
 # ------------------------------ 交易时段 ------------------------------
 OKX_AUTOMATION_SESSION_PRESET=always
 OKX_AUTOMATION_SESSION_TIMEZONE=UTC
+
+# ------------------------------ 持续学习与风控生命周期 ------------------------------
+LEARNING_ENABLED={}
+LEARNING_DAILY_DRAWDOWN_LIMIT_USD={}
+LEARNING_SHADOW_TRADING_ENABLED={}
 "#,
             req.llm_api_key.trim(),
             req.llm_base_url.trim(),
@@ -376,6 +425,9 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             req.okx_max_margin_percent,
             req.okx_trade_mode.trim(),
             req.okx_position_mode.trim(),
+            req.learning_enabled.unwrap_or(self.settings.read().learning.enabled),
+            req.learning_daily_drawdown_limit_usd.unwrap_or(self.settings.read().learning.daily_drawdown_limit_usd),
+            req.learning_shadow_trading_enabled.unwrap_or(self.settings.read().learning.shadow_trading_enabled),
         );
 
         let token = self.settings.read().web_auth_token.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$");
@@ -407,6 +459,19 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         new_settings.okx.trade_mode = req.okx_trade_mode.trim().into();
         new_settings.okx.position_mode = req.okx_position_mode.trim().into();
         new_settings.okx.auto_trading_enabled = false;
+        if let Some(en) = req.learning_enabled { new_settings.learning.enabled = en; }
+        if let Some(dd) = req.learning_daily_drawdown_limit_usd {
+            new_settings.learning.daily_drawdown_limit_usd = dd.abs();
+            self.drawdown_guard.set_max_loss_usd(dd.abs());
+        }
+        if let Some(st) = req.learning_shadow_trading_enabled {
+            new_settings.learning.shadow_trading_enabled = st;
+        }
+        if let Ok(tz) = new_settings.okx.automation_session_timezone.parse::<chrono_tz::Tz>() {
+            use chrono::Offset;
+            let offset_sec = chrono::Utc::now().with_timezone(&tz).offset().fix().local_minus_utc();
+            self.drawdown_guard.set_timezone_offset_ms((offset_sec as i64) * 1000);
+        }
         *self.automation_enabled.write() = false;
 
         let creds = if new_settings.is_okx_configured() {
@@ -555,7 +620,7 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
     }
 
     pub async fn candles(&self, inst_id: &str, timeframe: &str, limit: usize) -> Result<Vec<KlineBar>> {
-        let raw = self.fetch_raw_candles(inst_id, timeframe, limit.max(10).min(300)).await?;
+        let raw = self.fetch_raw_candles(inst_id, timeframe, limit.clamp(10, 300)).await?;
         if let Some(frame) = build_live_frame(&raw, limit, inst_id, timeframe, None) {
             Ok(frame.bars)
         } else {
@@ -664,20 +729,20 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             let symbol = ord.get("instId").and_then(|v| v.as_str()).unwrap_or("");
             let ord_id = ord.get("ordId").and_then(|v| v.as_str());
             let cl_ord_id = ord.get("clOrdId").and_then(|v| v.as_str());
-            if !symbol.is_empty() && (ord_id.is_some() || cl_ord_id.is_some()) {
-                if client.cancel_order(symbol, ord_id, cl_ord_id).await.is_ok() {
-                    cancelled_count += 1;
-                }
+            if !symbol.is_empty() && (ord_id.is_some() || cl_ord_id.is_some())
+                && client.cancel_order(symbol, ord_id, cl_ord_id).await.is_ok()
+            {
+                cancelled_count += 1;
             }
         }
 
         for algo in algo_orders {
             let symbol = algo.get("instId").and_then(|v| v.as_str()).unwrap_or("");
             let algo_id = algo.get("algoId").and_then(|v| v.as_str()).unwrap_or("");
-            if !symbol.is_empty() && !algo_id.is_empty() {
-                if client.cancel_algo_order(symbol, algo_id).await.is_ok() {
-                    cancelled_count += 1;
-                }
+            if !symbol.is_empty() && !algo_id.is_empty()
+                && client.cancel_algo_order(symbol, algo_id).await.is_ok()
+            {
+                cancelled_count += 1;
             }
         }
 
@@ -773,6 +838,9 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             .await;
 
         let value = serde_json::to_value(&report).unwrap_or(Value::Null);
+        for outcome in &report.newly_resolved {
+            let _ = self.hook_pipeline.read().run_post_outcome(&crate::learning::PostOutcomeContext { outcome: outcome.clone() });
+        }
         let mut runtime = self.learning_runtime.write();
         runtime.last_reconcile_ms = Some(Utc::now().timestamp_millis());
         runtime.last_report = Some(value.clone());
@@ -790,11 +858,13 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         let learning = self.settings.read().learning.clone();
         let outcomes = self.outcome_store.list(1000);
         let policy = learning.evaluation_policy();
-        let active = crate::ai::prompt_assembler::resolve_strategy_prompt(Some(
+        let cur_sys = self.current_trading_system.read().clone();
+        let active = crate::ai::prompt_assembler::resolve_strategy_prompt_for_system(&cur_sys, Some(
             &crate::config::paths::prompt_dir(),
         ));
         let grouped = group_by_prompt_version(&outcomes);
         let verdicts = crate::learning::evaluate_versions(&outcomes, &active.version, &policy);
+        let multidim = crate::learning::compute_multidimensional_metrics(&outcomes);
 
         let versions: Vec<Value> = grouped
             .iter()
@@ -822,6 +892,15 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
                 "qualified": outcomes.iter().filter(|o| o.qualified).count(),
             },
             "overall": metrics_for(&outcomes),
+            "by_strategy": crate::learning::group_by_strategy(&outcomes)
+                .into_iter()
+                .map(|(k, v)| (k, metrics_for(&v)))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            "by_symbol": crate::learning::group_by_symbol(&outcomes)
+                .into_iter()
+                .map(|(k, v)| (k, metrics_for(&v)))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            "multidimensional": multidim,
             "versions": versions,
             "experience": self.experience_writer.stats(),
             "policy": {
@@ -879,13 +958,53 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             let grouped = group_by_prompt_version(&outcomes);
             let baseline = metrics_for(grouped.get(&active_version).map(|v| v.as_slice()).unwrap_or(&[]));
             let candidate = metrics_for(grouped.get(version).map(|v| v.as_slice()).unwrap_or(&[]));
-            let result = compare_candidate(&candidate, &baseline, &learning.evaluation_policy());
-            let accepts = result.accepted;
-            verdict = serde_json::to_value(&result).unwrap_or(Value::Null);
+            let policy = learning.evaluation_policy();
+
+            let (accepts, reasons) = if candidate.samples >= policy.min_samples && baseline.samples >= policy.min_samples {
+                let result = compare_candidate(&candidate, &baseline, &policy);
+                let mut v = serde_json::to_value(&result).unwrap_or(Value::Null);
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("evaluation_mode".into(), serde_json::json!("live_trades"));
+                }
+                verdict = v;
+                (result.accepted, result.reasons)
+            } else {
+                // Break activation deadlock: fall back to ReplayEvaluator on benchmark episodes
+                let benchmark_dir = crate::config::paths::benchmark_episodes_dir();
+                let episodes = crate::records::benchmark::load_benchmark_episodes(&benchmark_dir)
+                    .unwrap_or_default();
+                if !episodes.is_empty() {
+                    let cand_content = self.prompt_store.content(STRATEGY_PROMPT_NAME, version)
+                        .ok_or_else(|| anyhow!("未找到候选版本 {}", version))?;
+                    let base_content = self.prompt_store.content(STRATEGY_PROMPT_NAME, &active_version)
+                        .unwrap_or_else(|| crate::ai::prompt_assembler::STRATEGY_PROMPT_FALLBACK.to_string());
+
+                    let result = crate::learning::replay_evaluator::ReplayEvaluator::evaluate_candidate_vs_baseline(
+                        &cand_content,
+                        version,
+                        &base_content,
+                        &active_version,
+                        &episodes,
+                        &policy,
+                    );
+                    let mut v = serde_json::to_value(&result).unwrap_or(Value::Null);
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("evaluation_mode".into(), serde_json::json!("benchmark_replay"));
+                        obj.insert("episodes_evaluated".into(), serde_json::json!(episodes.len()));
+                    }
+                    verdict = v;
+                    (result.accepted, result.reasons)
+                } else {
+                    let result = compare_candidate(&candidate, &baseline, &policy);
+                    verdict = serde_json::to_value(&result).unwrap_or(Value::Null);
+                    (result.accepted, result.reasons)
+                }
+            };
+
             anyhow::ensure!(
                 accepts,
                 "候选版本未通过选择性发布：{}（确认无误可用 force=true 跳过统计校验）",
-                result.reasons.join("；")
+                reasons.join("；")
             );
         }
 
@@ -904,6 +1023,107 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             .rollback(STRATEGY_PROMPT_NAME)?
             .ok_or_else(|| anyhow!("已是最早版本，无法回退"))?;
         Ok(serde_json::json!({ "active": active.version, "hash": active.hash }))
+    }
+
+    /// Reset the daily drawdown circuit breaker manually.
+    pub fn reset_circuit_breaker(&self) -> Value {
+        self.drawdown_guard.reset();
+        serde_json::json!({
+            "reset": true,
+            "tripped": false,
+            "current_drawdown_usd": self.drawdown_guard.current_drawdown_usd(),
+            "max_loss_usd": self.drawdown_guard.max_loss_usd(),
+            "note": "单日风控熔断器已手动重置",
+        })
+    }
+
+    /// Toggle shadow trading mode dynamically.
+    pub fn toggle_shadow_trading(&self) -> Value {
+        let mut settings = self.settings.write();
+        let new_state = !settings.learning.shadow_trading_enabled;
+        settings.learning.shadow_trading_enabled = new_state;
+        serde_json::json!({
+            "enabled": new_state,
+            "shadow_trading_enabled": new_state,
+            "note": if new_state { "影子交易模式已开启（新开仓订单将进入虚拟撮合通道）" } else { "影子交易模式已关闭（恢复真实/模拟盘执行）" },
+        })
+    }
+
+    /// Propose a mutated prompt revision based on failure reflection (GEPA loop).
+    pub fn propose_prompt_mutation(&self) -> Result<Value> {
+        let outcomes = self.outcome_store.list(500);
+        let failures: Vec<_> = outcomes.into_iter().filter(|o| o.r_multiple < 0.0 && o.qualified).collect();
+        anyhow::ensure!(!failures.is_empty(), "当前尚无已对账的失败交易样本，无法进行失败归因与反思");
+
+        let attributions = crate::learning::StrategyReflector::attribute_failures(&failures);
+        let active_version = self.prompt_store.index(STRATEGY_PROMPT_NAME).active;
+        let incumbent_content = self.prompt_store.content(STRATEGY_PROMPT_NAME, &active_version)
+            .unwrap_or_else(|| crate::ai::prompt_assembler::STRATEGY_PROMPT_FALLBACK.to_string());
+
+        let proposal = crate::learning::Proposer::propose_mutation(
+            &incumbent_content,
+            &active_version,
+            &attributions,
+        ).ok_or_else(|| anyhow!("无可用于生成反思突变的有效归因条款"))?;
+
+        let published_version = self.prompt_store.publish(
+            STRATEGY_PROMPT_NAME,
+            &proposal.mutated_content,
+            &proposal.diff_summary,
+        )?;
+
+        Ok(serde_json::json!({
+            "proposal_id": proposal.proposal_id,
+            "base_version": proposal.base_version,
+            "published_version": published_version,
+            "diff_summary": proposal.diff_summary,
+            "addressed_modes": proposal.addressed_modes,
+            "attributions_count": attributions.len(),
+            "note": "反思突变候选版本已生成并发布为未激活 Artifact，可进行基准重放评估",
+        }))
+    }
+
+    /// Solidify a settled trade outcome into a benchmark episode (data flywheel).
+    pub fn solidify_outcome_to_episode(&self, signal_id: &str) -> Result<Value> {
+        let outcome = self.outcome_store.load(signal_id)
+            .ok_or_else(|| anyhow!("未找到交易结果: {}", signal_id))?;
+
+        let benchmark_dir = crate::config::paths::benchmark_episodes_dir();
+        let records = crate::records::history::list_record_paths(&records_dir());
+        let mut klines: Vec<crate::data::base::KlineBar> = Vec::new();
+        for path in records {
+            if let Some(rec) = crate::records::history::load_record(&path) {
+                if rec.meta.record_id == outcome.decision_record_id {
+                    klines = rec
+                        .kline_data
+                        .iter()
+                        .filter_map(|v| serde_json::from_value::<crate::data::base::KlineBar>(v.clone()).ok())
+                        .collect();
+                    break;
+                }
+            }
+        }
+
+        let saved_path = crate::learning::Trade2Episode::solidify(
+            &benchmark_dir,
+            &outcome,
+            klines,
+            vec![],
+        )?;
+
+        Ok(serde_json::json!({
+            "success": true,
+            "signal_id": signal_id,
+            "saved_path": saved_path.to_string_lossy(),
+            "note": "实盘样本已一键固化为离线基准切片",
+        }))
+    }
+
+    /// List all offline benchmark episodes.
+    pub fn list_benchmark_episodes(&self) -> Result<Value> {
+        let dir = crate::config::paths::benchmark_episodes_dir();
+        let episodes = crate::records::benchmark::load_benchmark_episodes(&dir)?;
+        Ok(serde_json::to_value(episodes)?)
     }
 
     pub async fn analyze(
@@ -927,20 +1147,25 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
         };
 
         let system = crate::strategies::canonical(&system).ok_or_else(|| anyhow!("未知交易系统"))?.to_string();
-        let is_alpha = system == "alpha_pilot";
+        if execute {
+            let pre_anal_ctx = crate::learning::PreAnalysisContext {
+                symbol: inst_id.to_string(),
+                timeframe: timeframe.to_string(),
+                trading_system: system.clone(),
+                timestamp_ms: Utc::now().timestamp_millis(),
+                account_equity_usd: self.equity_history.read().last().and_then(|e| e["value"].as_f64()),
+            };
+            self.hook_pipeline.read().run_pre_analysis(&pre_anal_ctx)?;
+        }
         let is_adaptive = system.eq_ignore_ascii_case("adaptive") || system.contains("自适应");
 
-        let fetch_limit = if is_alpha || is_adaptive {
+        let fetch_limit = if is_adaptive {
             800.max(bar_count + INDICATOR_WARMUP_BARS + 20)
         } else {
             (bar_count + INDICATOR_WARMUP_BARS + 20).max(100)
         };
         let raw_bars = self.fetch_raw_candles(inst_id, timeframe, fetch_limit).await.context("读取分析行情失败")?;
-        let frame_bars = if is_alpha {
-            raw_bars.len().saturating_sub(1).min(800).max(bar_count)
-        } else {
-            bar_count
-        };
+        let frame_bars = bar_count;
         let frame = build_analysis_frame(&raw_bars, frame_bars, inst_id, timeframe, None)
             .ok_or_else(|| anyhow!("not enough closed OKX candles to build {}-bar analysis", frame_bars))?;
 
@@ -1010,24 +1235,71 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
                         decision["atr14"] = serde_json::json!(atr);
                     }
                     stamp_receipt(&mut decision, &record);
-                    // Quant strength is not a calibrated directional veto for the LLM strategy.
-                    let result = executor.execute(inst_id, timeframe, timestamp, &decision).await;
-                    execution_res = serde_json::to_value(result)?;
+                    // Lifecycle hook check: e.g. circuit breaker, shadow intercept
+                    let is_shadow = self.settings.read().learning.shadow_trading_enabled;
+                    let current_balance = self.equity_history.read().last().and_then(|e| e["value"].as_f64()).unwrap_or(10000.0);
+                    let pre_exec_ctx = crate::learning::PreExecutionContext {
+                        symbol: inst_id.to_string(),
+                        timeframe: timeframe.to_string(),
+                        trading_system: system.clone(),
+                        decision: decision.clone(),
+                        account_balance_usd: current_balance,
+                        is_shadow_mode: is_shadow,
+                    };
+                    let hook_decision = self.hook_pipeline.read().run_pre_execution(&pre_exec_ctx);
+                    match hook_decision {
+                        Ok(crate::learning::HookAction::Proceed) => {
+                            let result = executor.execute(inst_id, timeframe, timestamp, &decision).await;
+                            execution_res = serde_json::to_value(result)?;
+                        }
+                        Ok(crate::learning::HookAction::InterceptShadow { shadow_order_id, simulated_entry_price, note }) => {
+                            execution_res = serde_json::json!({
+                                "submitted": false,
+                                "shadow": true,
+                                "shadow_order_id": shadow_order_id,
+                                "entry_price": simulated_entry_price,
+                                "reason": note,
+                            });
+                        }
+                        Ok(crate::learning::HookAction::Skip(reason)) => {
+                            execution_res = serde_json::json!({
+                                "submitted": false,
+                                "reason": format!("Hook 跳过执行: {reason}"),
+                            });
+                        }
+                        Err(rejection) => {
+                            execution_res = serde_json::json!({
+                                "submitted": false,
+                                "reason": format!("{rejection}"),
+                            });
+                        }
+                    }
                 } else if ["平仓","修改止损","修改止盈","修改止盈止损"].contains(&order_type)
                     || ["CLOSE_EARLY","MOVE_STOP_LOSS","MOVE_TAKE_PROFIT","TRAILING_TAKE_PROFIT","MOVE_SL_TP"].contains(&action) {
                     let mut stamped = dec.clone();
                     stamp_receipt(&mut stamped, &record);
-                    let result = crate::web::positions::execute_management(&client, inst_id, &position_mode, &stamped).await;
-                    let execution = crate::okx::trading::ExecutionResult {
-                        submitted: result.is_ok(),
-                        signal_id: OKXTradeExecutor::generate_signal_id(inst_id,timeframe,timestamp,&stamped),
-                        request: serde_json::json!({"instId": inst_id, "action": action, "ordType": order_type}),
-                        response: result.as_ref().ok().cloned(),
-                        reason: result.err().map(|e| e.to_string()).unwrap_or_else(|| "持仓管理请求已提交".into()),
-                        error_code: String::new(), broker_tag: BROKER_TAG.into(),
-                    };
-                    executor.audit(&execution, inst_id,timeframe,dec);
-                    execution_res = serde_json::to_value(execution)?;
+                    let is_shadow = self.settings.read().learning.shadow_trading_enabled;
+                    if is_shadow {
+                        execution_res = serde_json::json!({
+                            "submitted": false,
+                            "shadow": true,
+                            "action": action,
+                            "order_type": order_type,
+                            "reason": "影子持仓管理指令已在虚拟通道执行",
+                        });
+                    } else {
+                        let result = crate::web::positions::execute_management(&client, inst_id, &position_mode, &stamped).await;
+                        let execution = crate::okx::trading::ExecutionResult {
+                            submitted: result.is_ok(),
+                            signal_id: OKXTradeExecutor::generate_signal_id(inst_id,timeframe,timestamp,&stamped),
+                            request: serde_json::json!({"instId": inst_id, "action": action, "ordType": order_type}),
+                            response: result.as_ref().ok().cloned(),
+                            reason: result.err().map(|e| e.to_string()).unwrap_or_else(|| "持仓管理请求已提交".into()),
+                            error_code: String::new(), broker_tag: BROKER_TAG.into(),
+                        };
+                        executor.audit(&execution, inst_id,timeframe,dec);
+                        execution_res = serde_json::to_value(execution)?;
+                    }
                 }
             }
         }
@@ -1038,8 +1310,6 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             "遛狗顺势回踩"
         } else if system == "adaptive" {
             "🧠 自适应观察模式（不开新仓）"
-        } else if system == "alpha_pilot" {
-            "⚡ AlphaPilot 量化因子系统"
         } else {
             "2PA 价格行为系统 (Al Brooks)"
         };
@@ -1156,10 +1426,36 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             self.set_automation_phase("outside_session", "当前不在交易时段，等待时段开放");
             return Ok(());
         }
+
+        // Run pre-analysis lifecycle hooks (e.g. daily drawdown circuit breaker)
+        let pre_anal_ctx = crate::learning::PreAnalysisContext {
+            symbol: symbol.clone(),
+            timeframe: timeframe.clone(),
+            trading_system: self.current_trading_system.read().clone(),
+            timestamp_ms: Utc::now().timestamp_millis(),
+            account_equity_usd: self.equity_history.read().last().and_then(|e| e["value"].as_f64()),
+        };
+        if let Err(rejection) = self.hook_pipeline.read().run_pre_analysis(&pre_anal_ctx) {
+            let msg = format!("{rejection}");
+            self.set_automation_phase("error", &msg);
+            self.automation_runtime.write().last_error = Some(msg);
+            return Ok(());
+        }
+
         self.set_automation_phase("checking_candles", "检查最新收盘 K 线");
         let raw = self.fetch_raw_candles(&symbol, &timeframe, 3).await.context("读取最新行情失败")?;
 
         if let Some(closed) = raw.iter().find(|b| b.closed) {
+            // Settle open shadow positions against the latest closed candle
+            let resolved_shadows = self.shadow_hook.match_bar(&symbol, closed);
+            for outcome in resolved_shadows {
+                let _ = self.outcome_store.save(&outcome);
+                let _ = self.hook_pipeline.read().run_post_outcome(&crate::learning::PostOutcomeContext { outcome: outcome.clone() });
+                if self.settings.read().learning.write_experience && outcome.qualified {
+                    let _ = self.experience_writer.record(&outcome);
+                }
+            }
+
             let key = (symbol.clone(), timeframe.clone());
             let last_ts = self.last_closed_ts.read().get(&key).copied().unwrap_or(0);
             if last_ts == closed.ts_open {
@@ -1277,5 +1573,165 @@ OKX_AUTOMATION_SESSION_TIMEZONE=UTC
             "popular_count": popular_keys.len(),
             "specs": all_specs,
         }))
+    }
+
+    pub fn submit_backtest_job(&self, config: crate::backtest::types::BacktestConfig) -> Result<String> {
+        let job_id = format!("BT-{}", uuid::Uuid::new_v4().simple());
+        let initial_status = crate::backtest::types::BacktestJobStatus {
+            job_id: job_id.clone(),
+            status: "running".to_string(),
+            progress_pct: 0.0,
+            current_bar: 0,
+            total_bars: 0,
+            message: "回测任务已创建，正在准备历史行情数据...".to_string(),
+            error: None,
+            created_at_ms: chrono::Utc::now().timestamp_millis(),
+            completed_at_ms: None,
+        };
+
+        let record = BacktestJobRecord {
+            status: initial_status.clone(),
+            report: None,
+        };
+
+        // Maintain at most 30 completed/failed backtest records in memory
+        {
+            let mut jobs = self.backtest_jobs.write();
+            if jobs.len() >= 30 {
+                let mut removable: Vec<(String, i64)> = jobs
+                    .iter()
+                    .filter(|(_, r)| r.status.status == "completed" || r.status.status == "failed")
+                    .map(|(k, r)| (k.clone(), r.status.created_at_ms))
+                    .collect();
+                removable.sort_by_key(|(_, ts)| *ts);
+                for (old_k, _) in removable.into_iter().take(jobs.len() - 29) {
+                    jobs.remove(&old_k);
+                }
+            }
+            jobs.insert(job_id.clone(), record);
+        }
+
+        let jobs_map = Arc::clone(&self.backtest_jobs);
+        let jid = job_id.clone();
+        let cache = self.decision_cache.clone();
+        let okx_client = self.okx_client.read().clone();
+        let ai_client = self.orchestrator.read().ai_client.clone();
+
+        tokio::spawn(async move {
+            let jobs_map_cb = Arc::clone(&jobs_map);
+            let jid_cb = jid.clone();
+            let progress_cb = Arc::new(move |status: crate::backtest::types::BacktestJobStatus| {
+                if let Some(r) = jobs_map_cb.write().get_mut(&jid_cb) {
+                    r.status = status;
+                }
+            });
+
+            // 1. Fetch or load historical bars
+            let interval_ms = crate::backtest::timeframe_to_ms(&config.timeframe);
+            let warmup_bars = 200usize;
+            let start_ts = config.start_time_ms.unwrap_or(1710000000000);
+            let candle_start_ts = start_ts - (warmup_bars as i64) * interval_ms;
+            let trading_bars = match (config.start_time_ms, config.end_time_ms) {
+                (Some(st), Some(et)) if et > st => ((et - st) / interval_ms).max(1) as usize,
+                _ => config.max_bars.max(300),
+            };
+            let synth_count = (warmup_bars + trading_bars + 30).max(config.max_bars.max(500));
+
+            let bars_res = if let Some(ref path_str) = config.fixture_path {
+                crate::backtest::load_candles_from_file(std::path::Path::new(path_str))
+            } else if config.data_source == crate::backtest::BacktestDataSource::LocalFile {
+                Err(anyhow!("未指定本地行情文件路径 (fixture_path)"))
+            } else if config.data_source == crate::backtest::BacktestDataSource::Synthetic {
+                Ok(crate::backtest::generate_synthetic_candles_for_strategy(
+                    &config.strategy_id,
+                    synth_count,
+                    65000.0,
+                    interval_ms,
+                    candle_start_ts,
+                ))
+            } else {
+                let requested = synth_count.min(3000);
+                let okx_res = crate::backtest::fetch_candles_okx(
+                    &okx_client,
+                    &config.symbol,
+                    &config.timeframe,
+                    requested,
+                    config.end_time_ms,
+                ).await;
+
+                match okx_res {
+                    Ok(b) if b.len() >= 200 => Ok(b),
+                    Ok(b) => {
+                        tracing::warn!("从 OKX 获取到 {} 根 K 线（不足 200 根预热要求），自动无缝切换为高质量仿真行情", b.len());
+                        Ok(crate::backtest::generate_synthetic_candles_for_strategy(
+                            &config.strategy_id,
+                            synth_count,
+                            65000.0,
+                            interval_ms,
+                            candle_start_ts,
+                        ))
+                    }
+                    Err(err) => {
+                        tracing::warn!("OKX 历史行情获取失败 ({})，自动切换为高质量仿真行情以保证回测顺利完成", err);
+                        Ok(crate::backtest::generate_synthetic_candles_for_strategy(
+                            &config.strategy_id,
+                            synth_count,
+                            65000.0,
+                            interval_ms,
+                            candle_start_ts,
+                        ))
+                    }
+                }
+            };
+
+            let bars_asc = match bars_res {
+                Ok(b) => b,
+                Err(err) => {
+                    let mut st = initial_status.clone();
+                    st.status = "failed".to_string();
+                    st.message = format!("获取历史 K 线失败: {}", err);
+                    st.error = Some(err.to_string());
+                    st.completed_at_ms = Some(chrono::Utc::now().timestamp_millis());
+                    if let Some(r) = jobs_map.write().get_mut(&jid) {
+                        r.status = st;
+                    }
+                    return;
+                }
+            };
+
+            // 2. Run engine
+            let engine = crate::backtest::BacktestEngine::new(config.clone(), cache, Some(Arc::new(ai_client)));
+            match engine.run(&jid, &bars_asc, Some(progress_cb)).await {
+                Ok(report) => {
+                    if let Some(r) = jobs_map.write().get_mut(&jid) {
+                        r.status.status = "completed".to_string();
+                        r.status.progress_pct = 100.0;
+                        r.status.message = "回测完成".to_string();
+                        r.status.completed_at_ms = Some(chrono::Utc::now().timestamp_millis());
+                        r.report = Some(report);
+                    }
+                }
+                Err(err) => {
+                    let mut st = initial_status.clone();
+                    st.status = "failed".to_string();
+                    st.message = format!("回测运行失败: {}", err);
+                    st.error = Some(err.to_string());
+                    st.completed_at_ms = Some(chrono::Utc::now().timestamp_millis());
+                    if let Some(r) = jobs_map.write().get_mut(&jid) {
+                        r.status = st;
+                    }
+                }
+            }
+        });
+
+        Ok(job_id)
+    }
+
+    pub fn get_backtest_status(&self, job_id: &str) -> Option<crate::backtest::types::BacktestJobStatus> {
+        self.backtest_jobs.read().get(job_id).map(|r| r.status.clone())
+    }
+
+    pub fn get_backtest_report(&self, job_id: &str) -> Option<crate::backtest::types::BacktestReport> {
+        self.backtest_jobs.read().get(job_id).and_then(|r| r.report.clone())
     }
 }

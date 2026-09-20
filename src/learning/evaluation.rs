@@ -82,6 +82,67 @@ pub fn group_by_prompt_version(outcomes: &[TradeOutcome]) -> BTreeMap<String, Ve
     grouped
 }
 
+/// Group outcomes by the strategy ID that produced them.
+pub fn group_by_strategy(outcomes: &[TradeOutcome]) -> BTreeMap<String, Vec<TradeOutcome>> {
+    let mut grouped: BTreeMap<String, Vec<TradeOutcome>> = BTreeMap::new();
+    for o in outcomes {
+        let key = if o.strategy_id.trim().is_empty() {
+            "2pa".to_string()
+        } else {
+            o.strategy_id.clone()
+        };
+        grouped.entry(key).or_default().push(o.clone());
+    }
+    grouped
+}
+
+/// Group outcomes by symbol (trading pair).
+pub fn group_by_symbol(outcomes: &[TradeOutcome]) -> BTreeMap<String, Vec<TradeOutcome>> {
+    let mut grouped: BTreeMap<String, Vec<TradeOutcome>> = BTreeMap::new();
+    for o in outcomes {
+        let key = if o.symbol.trim().is_empty() {
+            "unknown".to_string()
+        } else {
+            o.symbol.clone()
+        };
+        grouped.entry(key).or_default().push(o.clone());
+    }
+    grouped
+}
+
+/// Multidimensional breakdown of strategy metrics across multiple dimensions.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MultidimensionalMetrics {
+    pub overall: StrategyMetrics,
+    pub by_strategy: BTreeMap<String, StrategyMetrics>,
+    pub by_symbol: BTreeMap<String, StrategyMetrics>,
+    pub by_prompt_version: BTreeMap<String, StrategyMetrics>,
+}
+
+/// Compute multidimensional metrics across overall, strategy, symbol, and prompt version dimensions.
+pub fn compute_multidimensional_metrics(outcomes: &[TradeOutcome]) -> MultidimensionalMetrics {
+    let overall = metrics_for(outcomes);
+    let by_strategy = group_by_strategy(outcomes)
+        .into_iter()
+        .map(|(k, v)| (k, metrics_for(&v)))
+        .collect();
+    let by_symbol = group_by_symbol(outcomes)
+        .into_iter()
+        .map(|(k, v)| (k, metrics_for(&v)))
+        .collect();
+    let by_prompt_version = group_by_prompt_version(outcomes)
+        .into_iter()
+        .map(|(k, v)| (k, metrics_for(&v)))
+        .collect();
+
+    MultidimensionalMetrics {
+        overall,
+        by_strategy,
+        by_symbol,
+        by_prompt_version,
+    }
+}
+
 /// Rules a candidate must satisfy before it may be activated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationPolicy {

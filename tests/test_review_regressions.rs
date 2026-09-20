@@ -3,15 +3,9 @@
 //! Uses synthetic data and a loopback GET-only mock; never places exchange orders.
 
 use axum::{routing::get, Json, Router};
-use okx_2pa_agent::{
-    config::settings::Settings,
-    data::{base::KlineBar, snapshot::build_analysis_frame},
-    indicators::alpha_pilot::op_jump,
-    okx::{
-        client::{OKXClient, OKXCredentials},
-        trading::OKXTradeExecutor,
-    },
-    orchestrator::two_stage::TwoStageOrchestrator,
+use okx_2pa_agent::okx::{
+    client::{OKXClient, OKXCredentials},
+    trading::OKXTradeExecutor,
 };
 use rust_decimal_macros::dec;
 use serde_json::json;
@@ -44,64 +38,7 @@ async fn mock_balance(available: &str) -> (OKXClient, tokio::task::JoinHandle<()
     (client, task)
 }
 
-#[test]
-fn alpha_decision_exposes_executor_confidence() {
-    let bars: Vec<_> = (0..800)
-        .rev()
-        .map(|i| {
-            let price = if i % 80 < 40 { 100.0 } else { 90.0 };
-            KlineBar {
-                seq: 800 - i,
-                ts_open: 1_700_000_000_000 + i as i64 * 900_000,
-                open: price,
-                high: price + 2.0,
-                low: price - 2.0,
-                close: price + 0.1,
-                volume: 100.0,
-                amount: 0.0,
-                pct_chg: None,
-                closed: true,
-            }
-        })
-        .collect();
-    let frame = build_analysis_frame(&bars, 800, "ETH-USDT-SWAP", "15m", None).unwrap();
-    let orch = TwoStageOrchestrator::new(Settings::default(), std::env::temp_dir());
-    let record = orch.run_alpha_pilot_analysis(&frame, None).unwrap();
-    let wrapper = record.stage2_decision.unwrap();
-    let decision = &wrapper["decision"];
-    assert_eq!(
-        decision["action"], "OPEN",
-        "fixture must exercise an entry signal"
-    );
-    assert!(
-        decision["trade_confidence"].as_u64().is_some(),
-        "executor cannot read: {decision}"
-    );
-    assert!(decision["estimated_win_rate"].is_null());
-    use okx_2pa_agent::data::base::PositionContext;
-    let same_side = if decision["order_direction"] == "做多" {
-        "long"
-    } else {
-        "short"
-    };
-    let mut position = PositionContext {
-        has_position: true,
-        pos_side: same_side.into(),
-        ..Default::default()
-    };
-    let held = orch
-        .run_alpha_pilot_analysis(&frame, Some(&position))
-        .unwrap();
-    assert_eq!(held.stage2_decision.unwrap()["decision"]["action"], "HOLD");
-    position.pos_side = if same_side == "long" { "short" } else { "long" }.into();
-    let reversed = orch
-        .run_alpha_pilot_analysis(&frame, Some(&position))
-        .unwrap();
-    assert_eq!(
-        reversed.stage2_decision.unwrap()["decision"]["action"],
-        "CLOSE_EARLY"
-    );
-}
+
 
 #[tokio::test]
 async fn minimum_lot_must_not_override_risk_budget() {
@@ -182,17 +119,4 @@ async fn signal_older_than_120_seconds_must_expire() {
     );
 }
 
-#[test]
-fn jump_history_must_not_change_when_future_bars_are_appended() {
-    let prefix = [0.0, 0.0, 0.0, 1.0];
-    let old = op_jump(&prefix);
-    let mut extended = prefix.to_vec();
-    extended.push(100.0);
-    let new = op_jump(&extended);
-    assert!(
-        (old[3] - new[3]).abs() < 1e-12,
-        "historical jump changed after adding a future value: {} -> {}",
-        old[3],
-        new[3]
-    );
-}
+

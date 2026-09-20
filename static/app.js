@@ -1,6 +1,6 @@
-function historySystemLabel(id) { return ({"2pa":"旧版 2PA", "dog_walking":"旧版遛狗", "legacy_unknown":"旧版未归属"})[id] || systemLabel(id); }
-function canonicalSystem(id) { return ({"2pa":"2pa_trend", "dog_walking":"dog_reversion"})[id] || id; }
-function systemLabel(id) { return ({"2pa_trend":"2PA 趋势确认", "dog_reversion":"遛狗偏离回归", "dog_trend":"遛狗顺势回踩", "adaptive":"自适应观察（不开新仓）", "alpha_pilot":"AlphaPilot 量化因子"})[canonicalSystem(id)] || id || "旧版未归属"; }
+function historySystemLabel(id) { return ({"2pa":"旧版 2PA", "dog_walking":"旧版遛狗", "alpha_pilot":"历史 AlphaPilot (已开源独立)", "legacy_unknown":"旧版未归属"})[id] || systemLabel(id); }
+function canonicalSystem(id) { if (id === "alpha_pilot") return "2pa_trend"; return ({"2pa":"2pa_trend", "dog_walking":"dog_reversion"})[id] || id; }
+function systemLabel(id) { return ({"2pa_trend":"2PA 趋势确认", "dog_reversion":"遛狗偏离回归", "dog_trend":"遛狗顺势回踩", "adaptive":"自适应观察（不开新仓）"})[canonicalSystem(id)] || id || "旧版未归属"; }
 function isDogSystem(id) { return ["dog_reversion", "dog_trend"].includes(canonicalSystem(id)); }
 const $ = (id) => document.getElementById(id);
 
@@ -21,6 +21,9 @@ try {
   const savedSys = localStorage.getItem("okx_trading_system");
   if (["dog_walking", "2pa", "2pa_trend", "dog_reversion", "dog_trend", "adaptive", "alpha_pilot"].includes(savedSys)) {
     currentTradingSystem = canonicalSystem(savedSys);
+    if (savedSys === "alpha_pilot") {
+      try { localStorage.setItem("okx_trading_system", "2pa_trend"); } catch {}
+    }
   }
 } catch {}
 
@@ -504,7 +507,7 @@ function updateSystemUI() {
   }
   const btn = $("analyzeButton");
   if (btn) {
-    btn.textContent = currentTradingSystem === "alpha_pilot" ? "运行量化因子分析" : "运行 AI 分析";
+    btn.textContent = "运行 AI 分析";
   }
   const autoSys = $("autoSystem");
   if (autoSys) {
@@ -737,9 +740,7 @@ function renderDecision(result) {
     ? "【🐕 遛狗系统决策】"
     : (sys === "adaptive"
         ? "【🧠 智能自适应决策】"
-        : (sys === "alpha_pilot"
-            ? "【⚡ AlphaPilot 量化决策】"
-            : "【📊 2PA 价格行为决策】"));
+        : "【📊 2PA 价格行为决策】");
   $("reasoning").textContent = decision.reasoning ? `${reasoningPrefix}\n${decision.reasoning}` : (result.exception?.message || "无交易决策");
   $("executionResult").textContent = result.execution ? JSON.stringify(result.execution, null, 2) : "未提交订单";
 }
@@ -954,6 +955,62 @@ function renderLearning() {
   $("learningExpectancy").textContent = (overall.samples ? formatR(overall.expectancy_r) : "—");
   $("learningWinRate").textContent = (overall.samples ? formatPercent(overall.win_rate) : "—");
 
+  const cb = statusData?.circuit_breaker || {};
+  const shadow = statusData?.shadow_trading || {};
+  if ($("drawdownCurrent")) $("drawdownCurrent").textContent = `$${(cb.current_drawdown_usd || 0).toFixed(2)}`;
+  if ($("drawdownLimit")) $("drawdownLimit").textContent = `$${(cb.max_loss_usd || 500).toFixed(2)}`;
+  if ($("shadowActiveCount")) $("shadowActiveCount").textContent = `${shadow.active_positions || 0} 笔`;
+  if ($("shadowClosedCount")) $("shadowClosedCount").textContent = `${shadow.closed_outcomes || 0} 笔`;
+  if ($("lifecycleHookHint")) $("lifecycleHookHint").textContent = shadow.enabled ? "影子模式: 开启" : "影子模式: 关闭 (真实/模拟执行)";
+  if ($("circuitBreakerBadge")) {
+    const tripped = !!cb.tripped;
+    $("circuitBreakerBadge").textContent = tripped ? "已熔断" : "正常";
+    $("circuitBreakerBadge").classList.toggle("rejected", tripped);
+    $("circuitBreakerBadge").classList.toggle("good", !tripped);
+  }
+  if ($("circuitBreakerNote")) {
+    $("circuitBreakerNote").textContent = cb.tripped
+      ? `已触发单日回撤熔断（累计亏损 $${(cb.current_drawdown_usd || 0).toFixed(2)}，已超 $${(cb.max_loss_usd || 500).toFixed(2)} 限额），自动交易及开仓已暂停`
+      : `单日累计亏损 $${(cb.current_drawdown_usd || 0).toFixed(2)} / 限额 $${(cb.max_loss_usd || 500).toFixed(2)}，风控与影子撮合通道正常`;
+  }
+
+  // Multidimensional metrics (strategy and symbol breakdown)
+  const byStrategy = report.by_strategy || {};
+  const bySymbol = report.by_symbol || {};
+  const multidimRows = [];
+  for (const [strat, m] of Object.entries(byStrategy)) {
+    if (!m.samples) continue;
+    multidimRows.push(`
+      <div class="history-row">
+        <div class="history-main">
+          <span class="history-line">
+            <strong>策略 · ${escapeHtml(strat)}</strong>
+            <b class="history-status ${m.expectancy_r >= 0 ? 'submitted' : 'rejected'}">期望 ${formatR(m.expectancy_r)}</b>
+          </span>
+          <span class="history-detail">样本 ${m.samples} · 胜率 ${formatPercent(m.win_rate)} · 总盈亏 $${(m.total_pnl_usd || 0).toFixed(2)} · 平均持仓 ${m.avg_hold_bars?.toFixed(1) || 0} 根</span>
+        </div>
+      </div>`);
+  }
+  for (const [sym, m] of Object.entries(bySymbol)) {
+    if (!m.samples) continue;
+    multidimRows.push(`
+      <div class="history-row">
+        <div class="history-main">
+          <span class="history-line">
+            <strong>品种 · ${escapeHtml(sym)}</strong>
+            <b class="history-status ${m.expectancy_r >= 0 ? 'submitted' : 'rejected'}">期望 ${formatR(m.expectancy_r)}</b>
+          </span>
+          <span class="history-detail">样本 ${m.samples} · 胜率 ${formatPercent(m.win_rate)} · 总盈亏 $${(m.total_pnl_usd || 0).toFixed(2)} · 平均持仓 ${m.avg_hold_bars?.toFixed(1) || 0} 根</span>
+        </div>
+      </div>`);
+  }
+  if ($("multidimMetrics")) {
+    $("multidimMetrics").innerHTML = multidimRows.length ? multidimRows.join("") : `<div class="history-state">暂无多维切片统计数据</div>`;
+  }
+  if ($("multidimMetricsCount")) {
+    $("multidimMetricsCount").textContent = `${multidimRows.length} 项切片`;
+  }
+
   $("learningPromptVersion").textContent = prompt.version || "—";
   $("learningPromptSource").textContent = prompt.source === "artifact" ? "版本化 artifact" : "内置回退";
   $("learningPromptHash").textContent = prompt.hash || "—";
@@ -1032,6 +1089,7 @@ function renderLearning() {
           <span class="history-detail">${escapeHtml(detail)}</span>
           ${note}
         </div>
+        <button class="small-action" type="button" data-action="solidify-episode" data-signal="${escapeHtml(outcome.signal_id)}" title="将已结算样本固化为离线基准切片">固化切片</button>
       </div>`;
   }).join("") : `<div class="history-state">暂无已结算结果</div>`;
 
@@ -1051,9 +1109,41 @@ async function loadLearning() {
     learningReport = await api("/api/learning/report");
     learningOutcomes = await api("/api/learning/outcomes?limit=30");
     renderLearning();
+    await loadBenchmarkEpisodes();
   } catch (error) {
     $("learningState").hidden = false;
     $("learningState").textContent = error.message;
+  }
+}
+
+async function loadBenchmarkEpisodes() {
+  const container = $("benchmarkEpisodes");
+  if (!container) return;
+  try {
+    const episodes = await api("/api/learning/benchmark_episodes");
+    const countEl = $("benchmarkEpisodeCount");
+    if (countEl) countEl.textContent = `${episodes.length} 个`;
+    if (!episodes.length) {
+      container.innerHTML = `<div class="history-state">暂无离线基准切片</div>`;
+      return;
+    }
+    container.innerHTML = episodes.map(ep => {
+      const isLong = ep.expected_action?.includes("LONG") || ep.expected_action?.includes("做多");
+      const dirCls = isLong ? "long" : (ep.expected_action?.includes("SHORT") || ep.expected_action?.includes("做空") ? "short" : "neutral");
+      return `
+        <div class="history-row">
+          <div class="history-main">
+            <span class="history-line">
+              <strong>${escapeHtml(ep.episode_id || "切片")}</strong>
+              <span class="history-direction ${dirCls}">${escapeHtml(ep.expected_action || "—")}</span>
+              <b class="history-status submitted">基准 ${formatR(ep.benchmark_r)}</b>
+            </span>
+            <span class="history-detail">${escapeHtml(ep.symbol || "")} · ${escapeHtml(ep.market_regime || ep.regime || "")} · ${(ep.kline_data?.length || ep.bars?.length || 0)} 根K线 · ${escapeHtml(ep.description || "")}</span>
+          </div>
+        </div>`;
+    }).join("");
+  } catch (err) {
+    container.innerHTML = `<div class="history-state">读取切片失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -1091,9 +1181,7 @@ async function analyze() {
   const button = $("analyzeButton");
   button.disabled = true;
   const sysName = systemLabel(currentTradingSystem);
-  $("analysisState").textContent = currentTradingSystem === "alpha_pilot"
-    ? `正在获取 800 根已收盘 K 线并运行【${sysName}】…`
-    : `正在获取行情并运行【${sysName}】两阶段 AI…`;
+  $("analysisState").textContent = `正在获取行情并运行【${sysName}】两阶段 AI…`;
   try {
     const result = await api("/api/analyze", {
       method: "POST",
@@ -1391,6 +1479,9 @@ document.querySelectorAll(".tabs button").forEach((button) => button.addEventLis
   if (button.dataset.tab === "decision") loadDecisionHistory();
   if (button.dataset.tab === "automation") loadTradeHistory();
   if (button.dataset.tab === "learning") loadLearning();
+  if (button.dataset.tab === "backtest" && currentBacktestReport) {
+    requestAnimationFrame(() => drawBacktestDualChart(currentBacktestReport));
+  }
 }));
 
 $("instType").addEventListener("change", changeInstrumentType);
@@ -1461,6 +1552,58 @@ $("learningVersions").addEventListener("click", async (event) => {
     } catch (forceError) {
       toast(forceError.message);
     }
+  }
+});
+$("toggleShadowBtn").addEventListener("click", async () => {
+  try {
+    const res = await api("/api/learning/shadow_trading/toggle", { method: "POST" });
+    toast(res.note || "影子交易模式已切换");
+    await loadStatus();
+    await loadLearning();
+  } catch (err) {
+    toast(`切换影子模式失败: ${err.message}`);
+  }
+});
+$("resetCircuitBreakerBtn").addEventListener("click", async () => {
+  try {
+    const res = await api("/api/learning/circuit_breaker/reset", { method: "POST" });
+    toast(res.note || "风控熔断器已手动重置");
+    await loadStatus();
+    await loadLearning();
+  } catch (err) {
+    toast(`重置失败: ${err.message}`);
+  }
+});
+$("learningProposeBtn").addEventListener("click", async () => {
+  const btn = $("learningProposeBtn");
+  btn.disabled = true;
+  try {
+    toast("正在对账样本归因并生成反思突变候选版本…");
+    const res = await api("/api/learning/propose", { method: "POST" });
+    toast(`已生成反思候选版本 ${res.published_version}（覆盖 ${res.attributions_count || 0} 条归因，解决 ${res.addressed_modes?.length || 0} 种模式）`);
+    await loadLearning();
+  } catch (err) {
+    toast(`反思突变失败: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+$("learningOutcomes").addEventListener("click", async (event) => {
+  const button = event.target.closest('[data-action="solidify-episode"]');
+  if (!button) return;
+  const signalId = button.dataset.signal;
+  try {
+    button.disabled = true;
+    const res = await api("/api/learning/solidify_episode", {
+      method: "POST",
+      body: JSON.stringify({ signal_id: signalId }),
+    });
+    toast(`实盘样本已固化为离线基准切片: ${signalId}`);
+    await loadLearning();
+  } catch (err) {
+    toast(`固化切片失败: ${err.message}`);
+  } finally {
+    button.disabled = false;
   }
 });
 $("sessionPreset").addEventListener("change", changeSessionPreset);
@@ -1788,6 +1931,426 @@ $("popularSpecsList").addEventListener("click", (e) => {
     $("calcSymbolInput").value = match.inst_id;
     renderContractSpecCard(match);
     toast(`已载入 ${match.inst_id} 规格`);
+  }
+});
+
+// --- 📊 策略全流程回测 (Backtest) 模块 ---
+let currentBacktestReport = null;
+let currentBacktestFilter = "all";
+let backtestPollingTimer = null;
+
+function renderBacktestKPIs(metrics) {
+  if (!metrics) return;
+  $("btKpiSection").hidden = false;
+
+  const netPnl = metrics.net_profit || 0;
+  const netPnlPct = metrics.net_profit_pct || 0;
+  $("btKpiNetProfit").textContent = `${netPnl >= 0 ? "+" : ""}${fmtMoney(netPnl)} USDT`;
+  $("btKpiNetProfit").className = netPnl >= 0 ? "positive" : "negative";
+  $("btKpiNetProfitPct").textContent = `${netPnlPct >= 0 ? "+" : ""}${fmt(netPnlPct, 2)}%`;
+  $("btKpiNetProfitPct").className = netPnlPct >= 0 ? "bt-kpi-sub positive" : "bt-kpi-sub negative";
+
+  const maxDd = metrics.max_drawdown_amount || 0;
+  const maxDdPct = metrics.max_drawdown_pct || 0;
+  $("btKpiMaxDd").textContent = `-${fmtMoney(maxDd)} USDT`;
+  $("btKpiMaxDd").className = "negative";
+  $("btKpiMaxDdPct").textContent = `最大回撤: -${fmt(maxDdPct, 2)}%`;
+
+  $("btKpiSharpe").textContent = fmt(metrics.sharpe_ratio, 2);
+  $("btKpiSortino").textContent = `索提诺: ${fmt(metrics.sortino_ratio, 2)}`;
+
+  $("btKpiWinRate").textContent = `${fmt(metrics.win_rate, 1)}%`;
+  $("btKpiTradeCounts").textContent = `${metrics.winning_trades} 胜 / ${metrics.losing_trades} 负 (共 ${metrics.total_trades} 笔)`;
+
+  const expR = metrics.expectancy_r || 0;
+  $("btKpiExpectancyR").textContent = `${expR >= 0 ? "+" : ""}${fmt(expR, 2)} R`;
+  $("btKpiExpectancyR").className = expR >= 0 ? "positive" : "negative";
+  $("btKpiProfitFactor").textContent = `盈亏比: ${fmt(metrics.profit_factor, 2)}`;
+
+  const totalBars = metrics.total_bars_processed || 1;
+  const gatedBars = metrics.gated_bars_skipped || 0;
+  const gatedPct = ((gatedBars / totalBars) * 100) || 0;
+  $("btKpiGated").textContent = `${fmt(gatedPct, 1)}%`;
+  $("btKpiCacheHits").textContent = `短路 ${gatedBars} 根 · 命中缓存 ${metrics.cache_hits || 0}`;
+}
+
+function drawBacktestDualChart(report) {
+  const canvas = $("btDualCanvas");
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const placeholder = $("btChartEmpty");
+  const width = wrap.clientWidth || 380;
+  const height = wrap.clientHeight || 240;
+  const dpr = window.devicePixelRatio || 1;
+
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, width, height);
+
+  const points = report?.equity_curve || [];
+  if (points.length < 2) {
+    if (placeholder) placeholder.style.display = "grid";
+    return;
+  }
+  if (placeholder) placeholder.style.display = "none";
+
+  const padding = { left: 10, right: 65, top: 12, bottom: 20 };
+  const plotWidth = width - padding.left - padding.right;
+
+  // Track 1 (top 65%): Equity Curve
+  // Track 2 (bottom 35%): Underwater Drawdown %
+  const splitY = padding.top + (height - padding.top - padding.bottom) * 0.65;
+  const eqHeight = splitY - padding.top - 8;
+  const ddTop = splitY + 8;
+  const ddHeight = height - padding.bottom - ddTop;
+
+  // 1. Draw track 1: Equity Curve
+  const equities = points.map(p => p.equity);
+  const minEq = Math.min(...equities);
+  const maxEq = Math.max(...equities);
+  const eqPad = Math.max((maxEq - minEq) * 0.08, 1);
+  const lowEq = minEq - eqPad;
+  const highEq = maxEq + eqPad;
+  const eqRange = highEq - lowEq || 1;
+
+  const getX = (idx) => padding.left + (idx * plotWidth) / (points.length - 1);
+  const getEqY = (val) => padding.top + ((highEq - val) / eqRange) * eqHeight;
+
+  // Grid lines for Equity
+  ctx.strokeStyle = "#1d2326";
+  ctx.lineWidth = 1;
+  ctx.fillStyle = "#6e797d";
+  ctx.font = "10px Segoe UI, sans-serif";
+
+  [highEq - eqPad, (highEq + lowEq) / 2, lowEq + eqPad].forEach((val) => {
+    const y = getEqY(val);
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(width - padding.right, y);
+    ctx.stroke();
+    ctx.fillText(fmtMoney(val), width - padding.right + 6, y + 3);
+  });
+
+  // Draw Equity Path
+  ctx.beginPath();
+  points.forEach((p, idx) => {
+    const x = getX(idx);
+    const y = getEqY(p.equity);
+    if (idx === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.lineWidth = 2;
+  const rising = equities.at(-1) >= equities[0];
+  ctx.strokeStyle = rising ? "#1fc48d" : "#f05b67";
+  ctx.stroke();
+
+  // Equity Gradient Fill
+  ctx.lineTo(getX(points.length - 1), splitY - 8);
+  ctx.lineTo(getX(0), splitY - 8);
+  ctx.closePath();
+  const eqGrad = ctx.createLinearGradient(0, padding.top, 0, splitY);
+  if (rising) {
+    eqGrad.addColorStop(0, "rgba(31, 196, 141, 0.22)");
+    eqGrad.addColorStop(1, "rgba(31, 196, 141, 0.0)");
+  } else {
+    eqGrad.addColorStop(0, "rgba(240, 91, 103, 0.22)");
+    eqGrad.addColorStop(1, "rgba(240, 91, 103, 0.0)");
+  }
+  ctx.fillStyle = eqGrad;
+  ctx.fill();
+
+  // 2. Track separator line
+  ctx.beginPath();
+  ctx.strokeStyle = "#273034";
+  ctx.moveTo(padding.left, splitY);
+  ctx.lineTo(width - padding.right, splitY);
+  ctx.stroke();
+
+  // 3. Draw track 2: Underwater Drawdown %
+  const drawdowns = points.map(p => p.drawdown_pct || 0);
+  const maxDd = Math.max(...drawdowns, 5.0); // at least 5% range
+  const getDdY = (dd) => ddTop + (dd / maxDd) * ddHeight;
+
+  // Drawdown labels
+  ctx.fillStyle = "#6e797d";
+  ctx.fillText("0.0%", width - padding.right + 6, ddTop + 3);
+  ctx.fillText(`-${fmt(maxDd, 1)}%`, width - padding.right + 6, ddTop + ddHeight + 3);
+
+  ctx.beginPath();
+  points.forEach((p, idx) => {
+    const x = getX(idx);
+    const y = getDdY(p.drawdown_pct || 0);
+    if (idx === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = "#f05b67";
+  ctx.stroke();
+
+  // Drawdown Gradient Fill
+  ctx.lineTo(getX(points.length - 1), ddTop);
+  ctx.lineTo(getX(0), ddTop);
+  ctx.closePath();
+  const ddGrad = ctx.createLinearGradient(0, ddTop, 0, ddTop + ddHeight);
+  ddGrad.addColorStop(0, "rgba(240, 91, 103, 0.05)");
+  ddGrad.addColorStop(1, "rgba(240, 91, 103, 0.35)");
+  ctx.fillStyle = ddGrad;
+  ctx.fill();
+}
+
+function toggleBacktestTradeDetail(idx) {
+  const row = $(`btTradeRow_${idx}`);
+  const detailRow = $(`btTradeDetail_${idx}`);
+  if (!detailRow) return;
+  const willShow = detailRow.hidden;
+  detailRow.hidden = !willShow;
+  if (row) row.classList.toggle("expanded", willShow);
+}
+window.toggleBacktestTradeDetail = toggleBacktestTradeDetail;
+
+function renderBacktestTrades(trades = []) {
+  const body = $("btTradesBody");
+  if (!body) return;
+  $("btTradesSection").hidden = false;
+  $("btTradeCount").textContent = `${trades.length} 笔`;
+
+  const filtered = trades.filter(t => {
+    if (currentBacktestFilter === "win") return t.net_pnl > 0;
+    if (currentBacktestFilter === "loss") return t.net_pnl < 0;
+    return true;
+  });
+
+  if (!filtered.length) {
+    body.innerHTML = `<tr class="empty-row"><td colspan="6">无符合条件的成交记录</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = filtered.map((t, idx) => {
+    const isLong = t.direction.includes("多");
+    const isWin = t.net_pnl > 0;
+    const pnlClass = isWin ? "positive" : (t.net_pnl < 0 ? "negative" : "");
+    const dateStr = t.entry_time_ms ? new Date(t.entry_time_ms).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+    const exitDateStr = t.exit_time_ms ? new Date(t.exit_time_ms).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+    const reasonLabel = ({"take_profit":"止盈","stop_loss":"止损","expired":"持仓超时","liquidated":"强平","backtest_end":"回测结束"})[t.exit_reason] || t.exit_reason;
+
+    return `
+      <tr id="btTradeRow_${idx}" class="bt-trade-row" onclick="toggleBacktestTradeDetail(${idx})" title="点击展开/收起交易明细">
+        <td>
+          <span class="expand-icon">▶</span>
+          <strong>#${idx + 1} ${dateStr}</strong>
+          <small>${escapeHtml(t.order_type)}</small>
+        </td>
+        <td>
+          <span class="side-label ${isLong ? "long" : "short"}">${escapeHtml(t.direction)}</span>
+        </td>
+        <td>
+          <strong>${fmtMoney(t.entry_price)}</strong>
+          <small>平: ${fmtMoney(t.exit_price)}</small>
+        </td>
+        <td>
+          <strong>${t.contracts} 张</strong>
+          <small>${t.hold_bars} 根K线</small>
+        </td>
+        <td class="${pnlClass}">
+          <strong>${t.net_pnl >= 0 ? "+" : ""}${fmtMoney(t.net_pnl)}</strong>
+          <small>${t.pnl_percent >= 0 ? "+" : ""}${fmt(t.pnl_percent, 1)}%</small>
+        </td>
+        <td>
+          <strong class="${pnlClass}">${t.pnl_r >= 0 ? "+" : ""}${fmt(t.pnl_r, 2)}R</strong>
+          <small>${escapeHtml(reasonLabel)}</small>
+        </td>
+      </tr>
+      <tr id="btTradeDetail_${idx}" class="bt-trade-detail-row" hidden>
+        <td colspan="6">
+          <div class="bt-trade-detail-content">
+            <div class="bt-detail-grid">
+              <div class="bt-detail-item">
+                <span>交易编号 / 信号ID</span>
+                <strong>${escapeHtml(t.trade_id)} · ${escapeHtml(t.signal_id)}</strong>
+              </div>
+              <div class="bt-detail-item">
+                <span>策略标识</span>
+                <strong>${escapeHtml(t.strategy_id)}</strong>
+              </div>
+              <div class="bt-detail-item">
+                <span>出场原因</span>
+                <strong class="${pnlClass}">${escapeHtml(reasonLabel)}</strong>
+              </div>
+              <div class="bt-detail-item">
+                <span>开仓时间 / 平仓时间</span>
+                <strong>${dateStr} → ${exitDateStr}</strong>
+              </div>
+              <div class="bt-detail-item">
+                <span>止损价 / 止盈价</span>
+                <strong>止损 ${fmtMoney(t.stop_loss)} · 止盈 ${fmtMoney(t.take_profit)}</strong>
+              </div>
+              <div class="bt-detail-item">
+                <span>成交名义价值</span>
+                <strong>${fmtMoney(t.notional_usdt)} USDT (${t.contracts} 张)</strong>
+              </div>
+              <div class="bt-detail-item">
+                <span>毛盈亏 / 净盈亏</span>
+                <strong class="${pnlClass}">${fmtMoney(t.gross_pnl)} / ${fmtMoney(t.net_pnl)} USDT (${fmt(t.pnl_r, 2)}R)</strong>
+              </div>
+              <div class="bt-detail-item">
+                <span>手续费 / 模拟滑点</span>
+                <strong>手续费 -${fmtMoney(t.fees)} USDT · 滑点 -${fmtMoney(t.slippage)} USDT</strong>
+              </div>
+              <div class="bt-detail-item">
+                <span>最大顺行 / 逆行 (MFE / MAE)</span>
+                <strong>顺行 +${fmt(t.mfe_r, 2)}R · 逆行 -${fmt(t.mae_r, 2)}R</strong>
+              </div>
+            </div>
+            ${t.notes ? `<div class="bt-detail-notes"><strong>执行细节：</strong>${escapeHtml(t.notes)}</div>` : ""}
+          </div>
+        </td>
+      </tr>`;
+  }).join("");
+}
+
+async function runBacktest() {
+  const btn = $("btRunBtn");
+  const statusBox = $("btStatusBox");
+  const fill = $("btProgressBarFill");
+  const msg = $("btStatusMsg");
+  const stateText = $("btStatusState");
+  const pctText = $("btStatusPercent");
+
+  btn.disabled = true;
+  statusBox.hidden = false;
+  fill.style.width = "5%";
+  pctText.textContent = "5%";
+  stateText.textContent = "正在提交回测任务...";
+  msg.textContent = "正在初始化引擎与配置...";
+
+  if (backtestPollingTimer) {
+    clearInterval(backtestPollingTimer);
+    backtestPollingTimer = null;
+  }
+
+  const startVal = $("btStartDate")?.value;
+  const endVal = $("btEndDate")?.value;
+  const startTimeMs = startVal ? new Date(startVal).getTime() : null;
+  const endTimeMs = endVal ? new Date(endVal).getTime() : null;
+
+  const config = {
+    strategy_id: $("btStrategy").value,
+    symbol: ($("btSymbol").value.trim() || "BTC-USDT-SWAP").toUpperCase(),
+    timeframe: $("btTimeframe").value,
+    start_time_ms: startTimeMs && !isNaN(startTimeMs) ? startTimeMs : undefined,
+    end_time_ms: endTimeMs && !isNaN(endTimeMs) ? endTimeMs : undefined,
+    max_bars: Math.max(100, Math.min(3000, Number($("btMaxBars").value) || 1000)),
+    initial_capital: Math.max(100, Number($("btInitialCapital").value) || 10000),
+    risk_percent: Math.max(0.1, Number($("btRiskPct").value) || 1.0),
+    leverage: Math.max(1, Number($("btLeverage").value) || 5.0),
+    max_margin_percent: Math.max(5, Number($("btMaxMarginPct").value) || 50.0),
+    use_mechanical_exit: $("btUseMechanicalExit").checked,
+    use_cache: $("btUseCache").checked,
+    allow_llm_calls: $("btAllowLlm").checked,
+    data_source: $("btDataSource") ? $("btDataSource").value : "okx_api",
+  };
+
+  try {
+    const res = await api("/api/backtest/run", {
+      method: "POST",
+      body: JSON.stringify(config),
+    });
+
+    const jobId = res.job_id;
+    if (!jobId) throw new Error(res.error || "未能获取回测任务编号");
+
+    stateText.textContent = `任务进行中 [${jobId}]`;
+
+    backtestPollingTimer = setInterval(async () => {
+      try {
+        const st = await api(`/api/backtest/status/${jobId}`);
+        const pct = Math.max(5, Math.min(100, Math.round(st.progress_pct || 0)));
+        fill.style.width = `${pct}%`;
+        pctText.textContent = `${pct}%`;
+        msg.textContent = st.message || `处理中... ${st.current_bar}/${st.total_bars}`;
+
+        if (st.status === "completed") {
+          clearInterval(backtestPollingTimer);
+          backtestPollingTimer = null;
+          fill.style.width = "100%";
+          pctText.textContent = "100%";
+          stateText.textContent = "回测完成！正在生成深度分析报告...";
+
+          const report = await api(`/api/backtest/report/${jobId}`);
+          currentBacktestReport = report;
+
+          renderBacktestKPIs(report.metrics);
+          $("btChartSection").hidden = false;
+          drawBacktestDualChart(report);
+          renderBacktestTrades(report.trades);
+
+          btn.disabled = false;
+          statusBox.hidden = true;
+          toast(`回测完成！共执行 ${report.metrics.total_trades} 笔交易，净收益 ${fmtMoney(report.metrics.net_profit)} USDT`);
+        } else if (st.status === "failed") {
+          clearInterval(backtestPollingTimer);
+          backtestPollingTimer = null;
+          btn.disabled = false;
+          stateText.textContent = "回测失败";
+          msg.textContent = st.error || st.message || "未知错误";
+          toast(`回测失败: ${msg.textContent}`);
+        }
+      } catch (pollErr) {
+        // Continue polling unless stopped
+      }
+    }, 500);
+
+  } catch (err) {
+    btn.disabled = false;
+    stateText.textContent = "提交失败";
+    msg.textContent = err.message;
+    toast(`提交回测失败: ${err.message}`);
+  }
+}
+
+// 绑定回测交互事件
+$("btRunBtn").addEventListener("click", runBacktest);
+
+$("btPreset7d").addEventListener("click", () => {
+  $("btTimeframe").value = "15m";
+  $("btMaxBars").value = "672";
+  if ($("btStartDate")) $("btStartDate").value = "";
+  if ($("btEndDate")) $("btEndDate").value = "";
+  toast("已设为 7 天预设 (672 根 15m K 线)");
+});
+
+$("btPreset30d").addEventListener("click", () => {
+  $("btTimeframe").value = "15m";
+  $("btMaxBars").value = "2880";
+  if ($("btStartDate")) $("btStartDate").value = "";
+  if ($("btEndDate")) $("btEndDate").value = "";
+  toast("已设为 30 天预设 (2880 根 15m K 线)");
+});
+
+$("btPreset90d").addEventListener("click", () => {
+  $("btTimeframe").value = "1h";
+  $("btMaxBars").value = "2160";
+  if ($("btStartDate")) $("btStartDate").value = "";
+  if ($("btEndDate")) $("btEndDate").value = "";
+  toast("已设为 90 天预设 (2160 根 1h K 线)");
+});
+
+document.querySelectorAll(".bt-table-filters button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".bt-table-filters button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentBacktestFilter = btn.dataset.filter;
+    if (currentBacktestReport) {
+      renderBacktestTrades(currentBacktestReport.trades);
+    }
+  });
+});
+
+window.addEventListener("resize", () => {
+  if (currentBacktestReport && $("backtestTab").classList.contains("active")) {
+    drawBacktestDualChart(currentBacktestReport);
   }
 });
 

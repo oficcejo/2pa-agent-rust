@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![OKX 邀请注册](https://img.shields.io/badge/OKX-邀请注册-black.svg)](https://www.topzhjdgxcb.com/join/6746503)
 
-基于 Rust、Axum 和 Tokio 的 OKX 交易研究与执行工具，支持 LLM 两阶段分析、原生 AlphaPilot 因子、Web 控制台、自动交易时段，以及默认关闭的自进化闭环。模型负责解释和提出方案，程序根据已收盘行情、结构、成本和账户额度决定是否允许执行。
+基于 Rust、Axum 和 Tokio 的 OKX 交易研究与执行工具，支持 LLM 两阶段分析、Web 控制台、自动交易时段，以及默认关闭的自进化闭环。模型负责解释和提出方案，程序根据已收盘行情、结构、成本和账户额度决定是否允许执行。
 
 当前版本 **v0.5.0**，策略协议 **2026-09-v1**。规则阈值是研究基线，测试通过不代表策略已经实现盈利。
 
@@ -36,7 +36,7 @@
 - 拆分 `2pa_trend`、`dog_reversion`、`dog_trend`，分别记录策略归属和程序校验结果。
 - 校验入场确认、高周期支持、结构止损及费用后净盈亏比；无有效信号时等待，不强制生成挂单。
 - 移除无成交统计支持的胜率估计；只执行一个止盈目标，禁止逐棒推远止盈。
-- 所有 Web 页面及 API 增加身份验证；修复风险定仓、最小手数上调、信号过期、重复执行、保护单修改和 AlphaPilot 历史因子中的相关问题。
+- 所有 Web 页面及 API 增加身份验证；修复风险定仓、最小手数上调、信号过期、重复执行和保护单修改中的相关问题。
 
 旧配置 `2pa` 映射到 `2pa_trend`，`dog_walking` 映射到 `dog_reversion`；遛狗顺势策略须单独选择。`adaptive` 改为**仅观察、不开新仓**，有持仓仍可按共同规则管理。历史记录保持旧版标识，不将其收益归入新策略。
 
@@ -131,7 +131,6 @@ Compose 持久化 `/app/.env`、`/app/config`、`/app/records`，监听主机 80
 | `dog_reversion` | 反向偏离至少 2.5 ATR 后，二次极值测试、推动减速并收回/跌破 SMA14，排除强逆向趋势 | SMA170 与前方结构中更近的一处 |
 | `dog_trend` | SMA170 同向斜率、高周期同向、均线附近回踩及收盘确认 | 前方已确认支撑/阻力 |
 | `adaptive` | 仅观察，不自动选择策略开新仓 | 不适用 |
-| `alpha_pilot` | 原生因果滚动因子与 SuperTrend 引擎，无 LLM 调用 | 按原生引擎规则 |
 
 机械 H2/L2 是人工形态的严格子集。大偏离仅代表观察机会，不能单独触发回归交易；遛狗顺势回踩不要求回归策略的偏离距离。
 
@@ -233,7 +232,7 @@ node --check static/app.js
 
 ```text
 src/strategies.rs                  策略证据、净成本、入场及管理校验
-src/orchestrator/                  两阶段分析与 AlphaPilot 编排
+src/orchestrator/                  两阶段分析与策略编排
 src/learning/                      回执对账、结构化反馈、经验库、提示词版本化
 src/okx/                          OKX 客户端、定仓和执行
 src/web/                          认证、账户、持仓管理及 Web API

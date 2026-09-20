@@ -241,6 +241,45 @@ impl OKXClient {
         Ok(candles)
     }
 
+    pub async fn get_history_candles_with_cursor(
+        &self,
+        inst_id: &str,
+        bar: &str,
+        limit: usize,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<Vec<Vec<String>>> {
+        let limit_str = limit.min(100).to_string();
+        let mut params = vec![
+            ("instId", inst_id),
+            ("bar", bar),
+            ("limit", limit_str.as_str()),
+        ];
+        if let Some(a) = after {
+            if !a.is_empty() {
+                params.push(("after", a));
+            }
+        }
+        if let Some(b) = before {
+            if !b.is_empty() {
+                params.push(("before", b));
+            }
+        }
+        let data = self.request(reqwest::Method::GET, "/api/v5/market/history-candles", Some(&params), None, false).await?;
+
+        let mut candles = Vec::with_capacity(data.len());
+        for row in data {
+            if let Some(arr) = row.as_array() {
+                let items: Vec<String> = arr
+                    .iter()
+                    .map(|v| v.as_str().unwrap_or_default().to_string())
+                    .collect();
+                candles.push(items);
+            }
+        }
+        Ok(candles)
+    }
+
     pub async fn get_candles_paginated(
         &self,
         inst_id: &str,
@@ -248,15 +287,46 @@ impl OKXClient {
         total: usize,
         only_confirmed: bool,
     ) -> Result<Vec<Vec<String>>> {
+        self.get_candles_paginated_with_cursor(inst_id, bar, total, only_confirmed, None).await
+    }
+
+    pub async fn get_candles_paginated_with_cursor(
+        &self,
+        inst_id: &str,
+        bar: &str,
+        total: usize,
+        only_confirmed: bool,
+        initial_after: Option<&str>,
+    ) -> Result<Vec<Vec<String>>> {
         use std::collections::BTreeMap;
         let mut collected: BTreeMap<i64, Vec<String>> = BTreeMap::new();
-        let mut after: Option<String> = None;
-        let max_pages = (total / 100 + 4).max(2);
+        let mut after: Option<String> = initial_after.map(|s| s.to_string());
+        let max_pages = (total / 100 + 10).max(2);
+        let mut use_history_api = false;
 
         for _ in 0..max_pages {
-            let batch_limit = 300.min((total.saturating_sub(collected.len())).max(50));
-            let batch = match self.get_candles_with_cursor(inst_id, bar, batch_limit, after.as_deref()).await {
-                Ok(b) => b,
+            let batch_limit = if use_history_api {
+                100.min((total.saturating_sub(collected.len())).max(20))
+            } else {
+                300.min((total.saturating_sub(collected.len())).max(50))
+            };
+
+            let batch_res = if use_history_api {
+                self.get_history_candles_with_cursor(inst_id, bar, batch_limit, after.as_deref(), None).await
+            } else {
+                self.get_candles_with_cursor(inst_id, bar, batch_limit, after.as_deref()).await
+            };
+
+            let batch = match batch_res {
+                Ok(b) => {
+                    if b.is_empty() && !use_history_api {
+                        use_history_api = true;
+                        // Retry with history-candles
+                        self.get_history_candles_with_cursor(inst_id, bar, 100, after.as_deref(), None).await.unwrap_or_default()
+                    } else {
+                        b
+                    }
+                }
                 Err(e) => {
                     if !collected.is_empty() {
                         break;
@@ -286,13 +356,12 @@ impl OKXClient {
                 break;
             }
 
-            let oldest_str = oldest_ts.to_string();
-            if let Some(ref a) = after {
-                if oldest_str.as_str() >= a.as_str() {
+            if let Some(prev) = after.as_deref().and_then(|s| s.parse::<i64>().ok()) {
+                if oldest_ts >= prev {
                     break;
                 }
             }
-            after = Some(oldest_str);
+            after = Some(oldest_ts.to_string());
 
             if collected.len() >= total {
                 break;

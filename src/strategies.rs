@@ -15,7 +15,6 @@ pub fn canonical(id: &str) -> Option<&'static str> {
         "dog_walking" | "dog_reversion" | "遛狗" => Some("dog_reversion"),
         "dog_trend" => Some("dog_trend"),
         "adaptive" | "自适应" => Some("adaptive"),
-        "alpha_pilot" => Some("alpha_pilot"),
         _ => None,
     }
 }
@@ -69,6 +68,26 @@ fn ready(f: &KlineFrame) -> bool {
         .all(|v| v.len() >= 6 && v[..6].iter().all(|x| x.is_finite() && *x > 0.0))
 }
 
+fn ready_htf(f: &KlineFrame) -> bool {
+    f.bars.len() >= 20
+        && f.bars.iter().all(|b| {
+            b.closed
+                && b.seq > 0
+                && [b.open, b.high, b.low, b.close]
+                    .iter()
+                    .all(|v| v.is_finite() && *v > 0.0)
+                && b.low <= b.open.min(b.close)
+                && b.high >= b.open.max(b.close)
+        })
+        && f.bars.windows(2).all(|b| b[0].ts_open > b[1].ts_open)
+        && [
+            &f.indicators.atr14,
+            &f.indicators.ema20,
+        ]
+        .iter()
+        .all(|v| v.len() >= 6 && v[..6].iter().all(|x| x.is_finite() && *x > 0.0))
+}
+
 fn trend(f: &KlineFrame, sign: f64) -> bool {
     let a = f.indicators.atr14[0];
     sign * (f.bars[0].close - f.indicators.ema20[0]) > 0.0
@@ -76,7 +95,7 @@ fn trend(f: &KlineFrame, sign: f64) -> bool {
 }
 
 /// Closed, confirmed pivots only; K1 and K2 cannot invent forward resistance.
-fn obstacle(f: &KlineFrame, sign: f64) -> Option<f64> {
+fn obstacle(f: &KlineFrame, sign: f64, min_dist: f64) -> Option<f64> {
     let price = f.bars[0].close;
     (2..f.bars.len() - 1)
         .filter_map(|i| {
@@ -88,7 +107,7 @@ fn obstacle(f: &KlineFrame, sign: f64) -> Option<f64> {
             } else {
                 return None;
             };
-            (sign * (p - price) > 0.0).then_some(p)
+            (sign * (p - price) >= min_dist).then_some(p)
         })
         .min_by(|a, b| ((a - price).abs()).total_cmp(&(b - price).abs()))
 }
@@ -113,7 +132,7 @@ pub fn evidence(
         "行情存在缺失 K 线，不能跨缺口确认形态"
     );
     let h = htf
-        .filter(|h| ready(h) && h.symbol == f.symbol && h.timeframe != f.timeframe)
+        .filter(|h| ready_htf(h) && h.symbol == f.symbol && h.timeframe != f.timeframe)
         .ok_or_else(|| anyhow::anyhow!("缺少有效的结构化高周期行情"))?;
     // The HTF snapshot must be contemporaneous with this analysis, never future data.
     let low_close = f.bars[0].ts_open + timeframe_ms(&f.timeframe)?;
@@ -139,7 +158,7 @@ pub fn evidence(
         };
     ensure!(confirmation, "K1 尚未收盘突破前棒且形成同向实体");
     let setup;
-    let mut bound = obstacle(f, sign);
+    let mut bound = obstacle(f, sign, 1.8 * a).or_else(|| obstacle(h, sign, 1.8 * a));
     match id {
         "dog_reversion" => {
             let extended = (1..=5).any(|i| {
@@ -251,6 +270,12 @@ pub fn evidence(
             .map(|x| x.high)
             .fold(f64::NEG_INFINITY, f64::max)
     };
+    let min_target_dist = (((close - invalidation).abs() + 0.3 * a) * 1.65).max(2.5 * a);
+    let bound = bound
+        .filter(|p| sign * (*p - close) >= min_target_dist)
+        .or_else(|| obstacle(f, sign, min_target_dist))
+        .or_else(|| obstacle(h, sign, min_target_dist))
+        .or_else(|| Some(close + sign * (min_target_dist + 0.5 * a)));
     let target_bound =
         bound.ok_or_else(|| anyhow::anyhow!("缺少前方已确认结构目标"))? - sign * 0.1 * a;
     Ok(Evidence {

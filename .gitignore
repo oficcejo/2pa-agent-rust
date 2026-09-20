@@ -38,6 +38,8 @@ config/exception_state.json
 /records/**/*.json
 !/records/.gitkeep
 !/records/pending/.gitkeep
+!/records/benchmark_episodes/
+!/records/benchmark_episodes/*.json
 /trade_records/
 *.log
 *.log.*

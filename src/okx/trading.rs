@@ -570,13 +570,11 @@ impl OKXTradeExecutor {
         self.validate_prices(&rounded)?;
         if let Some(id) = decision["strategy_id"].as_str() {
             anyhow::ensure!(id != "adaptive", "自适应模式仅供观察");
-            if id != "alpha_pilot" {
-                anyhow::ensure!(crate::strategies::canonical(id) == Some(id), "未知或旧版策略不能直接执行");
-                let evidence: crate::strategies::Evidence = serde_json::from_value(decision["strategy_evidence"].clone())
-                    .map_err(|_| anyhow!("缺少程序确认的策略证据"))?;
-                anyhow::ensure!(evidence.strategy_id == id, "策略证据归属不一致");
-                crate::strategies::validate_entry(inst_id, &rounded, &evidence)?;
-            }
+            anyhow::ensure!(crate::strategies::canonical(id) == Some(id), "未知或旧版策略不能直接执行");
+            let evidence: crate::strategies::Evidence = serde_json::from_value(decision["strategy_evidence"].clone())
+                .map_err(|_| anyhow!("缺少程序确认的策略证据"))?;
+            anyhow::ensure!(evidence.strategy_id == id, "策略证据归属不一致");
+            crate::strategies::validate_entry(inst_id, &rounded, &evidence)?;
         }
         let mut size = self.compute_order_size(inst_id, inst_type, entry, stop, lot_sz, min_sz, &instrument).await?;
         if let Some(scale) = decision.get("position_scale") {

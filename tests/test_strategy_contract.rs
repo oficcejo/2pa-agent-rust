@@ -190,9 +190,11 @@ fn stage1_wait_terminal_wait_and_existing_position_override_open() {
 fn aliases_preserve_attribution_and_adaptive_is_observation_only() {
     assert_eq!(canonical("2pa"), Some("2pa_trend"));
     assert_eq!(canonical("dog_walking"), Some("dog_reversion"));
+    assert_eq!(canonical("alpha_pilot"), None);
     assert_eq!(canonical("unknown"), None);
     let (f, h) = fixture("2pa_trend");
     assert!(evidence("adaptive", &f, Some(&h), 1.0).is_err());
+    assert!(evidence("alpha_pilot", &f, Some(&h), 1.0).is_err());
 }
 
 #[test]

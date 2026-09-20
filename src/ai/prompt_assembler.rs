@@ -34,6 +34,13 @@ JSON 格式要求包含以下核心字段：
 
 pub const STAGE2_SYSTEM_PROMPT: &str = include_str!("../../prompt_engineering/strategy_v1.txt");
 
+pub const HARNESS_CORE_LANGUAGE_RULES: &str = include_str!("../../prompt_engineering/harness/core/language_rules.md");
+pub const HARNESS_CORE_RISK_PROTOCOL: &str = include_str!("../../prompt_engineering/harness/core/risk_protocol.md");
+pub const HARNESS_CORE_EXECUTION_CONTRACT: &str = include_str!("../../prompt_engineering/harness/core/execution_contract.md");
+
+pub const HARNESS_SKILL_2PA: &str = include_str!("../../prompt_engineering/harness/skills/price_action_2pa.md");
+pub const HARNESS_SKILL_DOG_WALKING: &str = include_str!("../../prompt_engineering/harness/skills/dog_walking.md");
+
 pub const DOG_WALKING_STAGE1_SYSTEM_PROMPT: &str = STAGE1_SYSTEM_PROMPT;
 pub const DOG_WALKING_STAGE2_SYSTEM_PROMPT: &str = include_str!("../../prompt_engineering/strategy_v1.txt");
 pub const ADAPTIVE_STAGE1_SYSTEM_PROMPT: &str = STAGE1_SYSTEM_PROMPT;
@@ -279,6 +286,70 @@ impl StrategyPrompt {
     }
 }
 
+/// Load modular core rules from the harness directory or embedded fallback.
+pub fn load_harness_core(module: &str, prompt_dir: Option<&Path>) -> String {
+    let harness_dir = prompt_dir
+        .map(|p| p.join("harness").join("core"))
+        .unwrap_or_else(|| crate::config::paths::harness_dir().join("core"));
+    let target = harness_dir.join(format!("{}.md", module));
+    if target.exists() {
+        if let Ok(content) = std::fs::read_to_string(&target) {
+            if !content.trim().is_empty() {
+                return content;
+            }
+        }
+    }
+    match module {
+        "language_rules" => HARNESS_CORE_LANGUAGE_RULES.to_string(),
+        "risk_protocol" => HARNESS_CORE_RISK_PROTOCOL.to_string(),
+        "execution_contract" => HARNESS_CORE_EXECUTION_CONTRACT.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Load modular skill rules from the harness directory or embedded fallback.
+pub fn load_harness_skill(system: &str, prompt_dir: Option<&Path>) -> String {
+    let canon = crate::strategies::canonical(system).unwrap_or(system);
+    let skill_name = match canon {
+        "dog_reversion" | "dog_trend" | "dog_walking" => "dog_walking",
+        _ => "price_action_2pa",
+    };
+    let harness_dir = prompt_dir
+        .map(|p| p.join("harness").join("skills"))
+        .unwrap_or_else(|| crate::config::paths::harness_dir().join("skills"));
+    let target = harness_dir.join(format!("{}.md", skill_name));
+    if target.exists() {
+        if let Ok(content) = std::fs::read_to_string(&target) {
+            if !content.trim().is_empty() {
+                return content;
+            }
+        }
+    }
+    match skill_name {
+        "dog_walking" => HARNESS_SKILL_DOG_WALKING.to_string(),
+        _ => HARNESS_SKILL_2PA.to_string(),
+    }
+}
+
+/// Resolve strategy prompt dynamically based on the active trading system.
+pub fn resolve_strategy_prompt_for_system(system: &str, prompt_dir: Option<&Path>) -> StrategyPrompt {
+    let canon = crate::strategies::canonical(system).unwrap_or(system);
+    match canon {
+        "dog_reversion" | "dog_trend" | "dog_walking" => {
+            let skill = load_harness_skill("dog_walking", prompt_dir);
+            let contract = load_harness_core("execution_contract", prompt_dir);
+            let content = format!("{}\n\n{}", skill, contract);
+            StrategyPrompt {
+                hash: crate::learning::artifact::content_hash(&content),
+                content,
+                version: "dog_walking_harness".to_string(),
+                source: "harness",
+            }
+        }
+        _ => resolve_strategy_prompt(prompt_dir),
+    }
+}
+
 /// Load the active strategy prompt from the artifact store.
 ///
 /// Falls back to the compiled-in copy when no directory is configured or the
@@ -388,6 +459,31 @@ pub struct Stage2PromptRequest<'a> {
     pub htf_context: Option<&'a str>,
 }
 
+/// Mount indicator tables dynamically based on the active trading strategy.
+///
+/// Eliminates redundant dual-table injection (EMA20 vs SMA14/SMA170) and attaches
+/// relevant Price Action features (e.g. geometric candlestick attributes) where needed.
+pub fn render_indicators_for_system(system: &str, frame: &KlineFrame) -> String {
+    let canon = crate::strategies::canonical(system).unwrap_or("2pa_trend");
+    match canon {
+        "dog_reversion" => {
+            // Dog walking only requires the deviation and SMA14/SMA170 table
+            render_dog_walking_kline_table(frame)
+        }
+        "adaptive" => {
+            // Adaptive strategy monitors both price action and deviation regimes
+            format!("{}\n\n{}", render_kline_table(frame), render_dog_walking_kline_table(frame))
+        }
+        _ => {
+            // Price action strategies (2pa, 2pa_trend, etc.): mount EMA20 table and candle geometry table
+            format!("{}\n\n#### 📐 近端 K 线微观几何特征明细 (实体比/影线比/收盘位置)\n{}",
+                render_kline_table(frame),
+                render_geometry_features_table(frame)
+            )
+        }
+    }
+}
+
 pub fn build_stage2_prompt_with_strategy(
     req: &Stage2PromptRequest<'_>,
 ) -> (String, Vec<String>, Vec<ExperienceEntry>) {
@@ -401,16 +497,17 @@ pub fn build_stage2_prompt_with_strategy(
     );
     let experience_section = render_experience_section(&experiences);
 
+    let indicators_section = render_indicators_for_system(req.system, req.frame);
+
     let prompt = format!(
-        "{}\n{}\n策略：{}\n{}\n阶段一：{}\n持仓：{}\n{}\n{}\n{}\n{}\n阶段二：仅输出交易决策 JSON。",
+        "{}\n{}\n策略：{}\n{}\n阶段一：{}\n持仓：{}\n{}\n{}\n{}\n阶段二：仅输出交易决策 JSON。",
         LANGUAGE_ZH_RULE,
         req.strategy_prompt,
         crate::strategies::canonical(req.system).unwrap_or("unknown"),
         build_decision_stance_guidance(req.decision_stance),
         req.stage1_diagnosis,
         serde_json::to_string(&req.position_context).unwrap_or_default(),
-        render_kline_table(req.frame),
-        render_dog_walking_kline_table(req.frame),
+        indicators_section,
         req.htf_context.unwrap_or("高周期数据缺失"),
         experience_section
     );
@@ -425,11 +522,12 @@ pub fn build_stage2_prompt_with_strategy(
 pub fn build_stage1_prompt_for_system(
     system: &str, frame: &KlineFrame, prompt_dir: Option<&Path>, htf_context: Option<&str>,
 ) -> String {
-    let strategy = resolve_strategy_prompt(prompt_dir);
-    format!("{}\n{}\n策略：{}\n{}\n{}\n高时间框架：{}\n阶段一：仅输出市场诊断 JSON。",
+    let strategy = resolve_strategy_prompt_for_system(system, prompt_dir);
+    let indicators_section = render_indicators_for_system(system, frame);
+    format!("{}\n{}\n策略：{}\n{}\n高时间框架：{}\n阶段一：仅输出市场诊断 JSON。",
         LANGUAGE_ZH_RULE, strategy.content,
         crate::strategies::canonical(system).unwrap_or("unknown"),
-        render_kline_table(frame), render_dog_walking_kline_table(frame), htf_context.unwrap_or("高周期数据缺失"))
+        indicators_section, htf_context.unwrap_or("高周期数据缺失"))
 }
 
 pub fn build_stage2_prompt_for_system(
@@ -437,7 +535,7 @@ pub fn build_stage2_prompt_for_system(
     _load_all_strategies: bool, prompt_dir: Option<&Path>, experience_dir: Option<&Path>,
     position_context: Option<&PositionContext>, htf_context: Option<&str>,
 ) -> (String, Vec<String>, Vec<ExperienceEntry>) {
-    let strategy = resolve_strategy_prompt(prompt_dir);
+    let strategy = resolve_strategy_prompt_for_system(system, prompt_dir);
     build_stage2_prompt_with_strategy(&Stage2PromptRequest {
         system,
         frame,
@@ -587,5 +685,27 @@ mod tests {
         });
         assert!(loaded.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_render_indicators_for_system_decouples_indicators() {
+        let f = frame();
+
+        // 2PA system must mount EMA20 and geometry features, and MUST NOT mount SMA14/SMA170
+        let pa_indicators = render_indicators_for_system("2pa_trend", &f);
+        assert!(pa_indicators.contains("EMA20"));
+        assert!(pa_indicators.contains("微观几何特征"));
+        assert!(!pa_indicators.contains("SMA170 (主人)"), "2PA prompt must not include dog walking table");
+
+        // Dog walking system must mount SMA14/SMA170, and MUST NOT mount EMA20 or geometry features
+        let dog_indicators = render_indicators_for_system("dog_walking", &f);
+        assert!(dog_indicators.contains("SMA14 (狗绳)"));
+        assert!(dog_indicators.contains("SMA170 (主人)"));
+        assert!(!dog_indicators.contains("微观几何特征"), "Dog walking prompt must not include PA geometry table");
+
+        // Adaptive system mounts both
+        let adaptive_indicators = render_indicators_for_system("adaptive", &f);
+        assert!(adaptive_indicators.contains("EMA20"));
+        assert!(adaptive_indicators.contains("SMA170 (主人)"));
     }
 }

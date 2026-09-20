@@ -1,0 +1,140 @@
+cargo test --all-targets
+   Compiling okx-2pa-agent v0.4.0 (D:\www\okx\2pa-agent-rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.80s
+     Running unittests src\lib.rs (target\debug\deps\okx_2pa_agent-a03cc1c366bb3994.exe)
+
+running 7 tests
+test indicators::alpha_pilot::tests::test_neutral_band_mapping ... ok
+test indicators::alpha_pilot::tests::test_torch_median_even_and_odd ... ok
+test indicators::atr::tests::test_atr_full ... ok
+test indicators::alpha_pilot::tests::test_supertrend_logic ... ok
+test util::mask::tests::test_mask_secret ... ok
+test indicators::ema::tests::test_ema_full ... ok
+test indicators::sma::tests::test_sma_full ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\debug\deps\okx_2pa_agent-809b0de21c66ac46.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\test_bug_investigation.rs (target\debug\deps\test_bug_investigation-bad110d67bf37700.exe)
+
+running 6 tests
+test test_indicators_incremental_matches_full ... ok
+test test_invalid_timezone_fails_closed ... ok
+test test_warmup_insufficient_produces_missing_dev_pct ... ok
+test test_path_traversal_static_files ... ok
+test test_extract_outer_json_with_braces_in_string ... ok
+test test_json_repair_preserves_string_content ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\test_indicators.rs (target\debug\deps\test_indicators-a924e1ae8873c304.exe)
+
+running 6 tests
+test test_ema_calculation ... ok
+test test_geometry_features ... ok
+test test_sma_calculation ... ok
+test test_atr_calculation ... ok
+test test_dog_walking_prompts ... ok
+test test_adaptive_system_prompts ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\test_json_validator.rs (target\debug\deps\test_json_validator-46cb18391a20037e.exe)
+
+running 7 tests
+test test_stage1_validation ... ok
+test test_stage2_validation ... ok
+test test_ultra_narrow_stop_loss_rejected ... ok
+test test_stage1_strong_bear_knife_catching_rejected ... ok
+test test_stage1_semantic_conflict_double_top_rejected ... ok
+test test_strip_markdown_fences ... ok
+test test_extract_outer_json ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests\test_okx_trading.rs (target\debug\deps\test_okx_trading-ba2b0683eeeb2ae8.exe)
+
+running 4 tests
+test test_broker_tag_constant ... ok
+test test_signal_id_generation ... ok
+test test_build_request_rejects_ultra_narrow_stop_loss ... ok
+test test_build_request_contains_broker_tag ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\test_review_regressions.rs (target\debug\deps\test_review_regressions-ecd0ed2883ddbece.exe)
+
+running 6 tests
+test jump_history_must_not_change_when_future_bars_are_appended ... ok
+test signal_older_than_120_seconds_must_expire ... ok
+test zero_available_margin_must_block_new_size ... ok
+test minimum_lot_must_not_override_risk_budget ... ok
+test minimum_lot_must_not_override_margin_budget ... ok
+test alpha_decision_exposes_executor_confidence ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests\test_sessions.rs (target\debug\deps\test_sessions-8716ca5522fec6c5.exe)
+
+running 2 tests
+test test_session_presets ... ok
+test test_session_always ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\test_strategy_contract.rs (target\debug\deps\test_strategy_contract-a031e64ab35d9dbd.exe)
+
+running 13 tests
+test aliases_preserve_attribution_and_adaptive_is_observation_only ... ok
+test management_preserves_targets_and_requires_cost_covered_break_even ... ok
+test trend_retest_has_no_reversion_distance_requirement ... ok
+test missing_stale_future_or_opposing_htf_blocks_entries ... ok
+test pa_second_entry_requires_two_attempts_and_trend ... ok
+test structure_drift_costs_and_remaining_space_are_hard_gates ... ok
+test stage1_wait_terminal_wait_and_existing_position_override_open ... ok
+test no_confirmation_no_entry_even_with_model_claims ... ok
+test all_three_strategies_accept_confirmed_symmetric_setups ... ok
+test tick_rounding_cannot_cross_structural_stop_buffer ... ok
+test all_stances_use_only_new_contract ... ok
+test execution_rechecks_market_price_and_requires_evidence ... ok
+test full_two_stage_analysis_records_program_verdict_and_canonical_strategy ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests\test_trade_safety.rs (target\debug\deps\test_trade_safety-1e11f85796c03c28.exe)
+
+running 13 tests
+test normalized_position_and_trailing_stop_handle_both_modes ... ok
+test execution_disabled_is_rejected_before_any_network_request ... ok
+test private_routes_require_auth_and_reject_cross_site_writes ... ok
+test valid_size_respects_risk_and_margin_after_estimated_fees ... ok
+test moved_market_price_invalidates_old_stop_before_submission ... ok
+test account_error_blocks_order_and_leverage_changes ... ok
+test rolling_normalization_is_causal_across_warmup_boundary ... ok
+test leverage_error_blocks_submission_even_when_no_position ... ok
+test expiry_only_cancels_old_owned_entry_orders ... ok
+test close_hedged_short_passes_short_position_side ... ok
+test account_payload_uses_ui_fields_and_actual_available_margin ... ok
+test simultaneous_identical_signal_submits_only_once_and_keeps_manual_orders ... ok
+test amend_failure_preserves_old_protection_and_rejects_wider_combined_stop ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\test_web_service.rs (target\debug\deps\test_web_service-88d8e2001a2ed09a.exe)
+
+running 2 tests
+test test_trading_system_switch ... ok
+test test_alpha_pilot_orchestrator_zero_token_execution ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+Exit code: 0
+node --check static/app.js
+
+Exit code: 0

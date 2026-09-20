@@ -245,6 +245,7 @@ async fn partial_fill_is_measured_against_filled_quantity() {
     let outcome = store.load(SIGNAL_ID).unwrap();
     assert!(outcome.filled);
     assert_eq!(outcome.fill_ratio, 0.5);
+    assert_eq!(outcome.size, 0.5, "outcome.size must scale to filled quantity, not requested size");
     let _ = std::fs::remove_dir_all(&root);
 }
 
