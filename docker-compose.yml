@@ -3,7 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Always build locally; avoids compose trying docker.io/library/okx-2pa-agent:latest first
     image: okx-2pa-agent:latest
+    pull_policy: build
     container_name: okx-2pa-agent
     restart: unless-stopped
     ports:
@@ -16,4 +18,5 @@ services:
       - ./.env:/app/.env
       - ./config:/app/config
       # 交易审计记录与历史决策持久化
+      # benchmark_episodes 已内嵌进二进制，运行时可继续从挂载目录加载/追加
       - ./records:/app/records

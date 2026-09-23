@@ -10,7 +10,12 @@ tmp/
 .env.*
 **/.web-auth-token
 config/secret.key
-records/
+# Runtime records stay out of the image; compiled-in benchmark slices must remain.
+records/**
+!records/benchmark_episodes/
+!records/benchmark_episodes/**
 reports/
 .idea/
 .vscode/
+.playwright-cli/
+promo_video/

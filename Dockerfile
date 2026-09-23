@@ -24,6 +24,8 @@ COPY src ./src
 COPY static ./static
 COPY prompt_engineering ./prompt_engineering
 COPY experience ./experience
+# include_str! in src/records/benchmark.rs requires these at compile time
+COPY records/benchmark_episodes ./records/benchmark_episodes
 
 # Touch source files to invalidate dummy build artifacts and compile real release binary
 RUN touch src/main.rs src/lib.rs && \
