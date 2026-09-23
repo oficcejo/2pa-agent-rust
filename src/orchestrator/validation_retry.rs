@@ -10,11 +10,21 @@ pub async fn call_and_validate_stage1(
     prompt: &str,
     max_retries: usize,
 ) -> Result<(Value, LLMReply, Vec<ChatMessage>)> {
-    let mut messages = vec![ChatMessage {
-        role: "user".to_string(),
-        content: prompt.to_string(),
-    }];
+    call_and_validate_stage1_messages(
+        client,
+        vec![ChatMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }],
+        max_retries,
+    ).await
+}
 
+pub async fn call_and_validate_stage1_messages(
+    client: &AIClient,
+    mut messages: Vec<ChatMessage>,
+    max_retries: usize,
+) -> Result<(Value, LLMReply, Vec<ChatMessage>)> {
     let mut last_err = None;
 
     for attempt in 0..=max_retries {
@@ -71,11 +81,23 @@ pub async fn call_and_validate_stage2(
     max_retries: usize,
     stage1_diagnosis: Option<&Value>,
 ) -> Result<(Value, LLMReply, Vec<ChatMessage>)> {
-    let mut messages = vec![ChatMessage {
-        role: "user".to_string(),
-        content: prompt.to_string(),
-    }];
+    call_and_validate_stage2_messages(
+        client,
+        vec![ChatMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }],
+        max_retries,
+        stage1_diagnosis,
+    ).await
+}
 
+pub async fn call_and_validate_stage2_messages(
+    client: &AIClient,
+    mut messages: Vec<ChatMessage>,
+    max_retries: usize,
+    stage1_diagnosis: Option<&Value>,
+) -> Result<(Value, LLMReply, Vec<ChatMessage>)> {
     let mut last_err = None;
 
     for attempt in 0..=max_retries {

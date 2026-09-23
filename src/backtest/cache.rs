@@ -65,14 +65,19 @@ impl DecisionCache {
         }
     }
 
-    /// Compute a unique cryptographic fingerprint for a KlineFrame state and strategy.
+    /// Compute a unique cryptographic fingerprint for a KlineFrame state, strategy, and evaluation mode.
     pub fn compute_fingerprint(
         strategy_id: &str,
         frame: &KlineFrame,
         htf_frame: Option<&KlineFrame>,
+        mode: Option<&str>,
     ) -> String {
         let mut hasher = Sha256::new();
         hasher.update(strategy_id.as_bytes());
+        if let Some(m) = mode {
+            hasher.update(b":mode:");
+            hasher.update(m.as_bytes());
+        }
         hasher.update(frame.symbol.as_bytes());
         hasher.update(frame.timeframe.as_bytes());
 

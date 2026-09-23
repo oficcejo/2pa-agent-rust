@@ -87,7 +87,10 @@ pub async fn read_position(
     if let Some(row) = active.first() {
         pos.has_position = true;
         pos.pos_side = position_side(row)?.into();
-        pos.pos_size = number(row, "pos").unwrap().abs().to_string();
+        pos.pos_size = number(row, "pos")
+            .ok_or_else(|| anyhow!("无法读取持仓数量"))?
+            .abs()
+            .to_string();
         pos.open_avg_px = number(row, "avgPx");
         pos.mark_px = number(row, "markPx");
         pos.unrealized_pnl = number(row, "upl");

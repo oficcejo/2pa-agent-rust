@@ -242,7 +242,7 @@ pub fn generate_synthetic_candles_for_strategy(
     let strat_clean = strategy.trim().to_lowercase();
     let is_dog_reversion = strat_clean == "dog_reversion" || strat_clean == "dog_walking" || strat_clean == "遛狗";
     let is_dog_trend = strat_clean == "dog_trend";
-    let is_2pa = strat_clean == "2pa" || strat_clean == "2pa_trend";
+    let is_2pa = strat_clean == "2pa" || strat_clean == "2pa_trend" || strat_clean == "2pa_source";
 
     let mut current_open = start_price;
     for i in 0..count {

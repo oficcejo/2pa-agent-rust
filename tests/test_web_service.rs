@@ -104,9 +104,9 @@ async fn automation_service(okx_url: &str, llm_url: Option<&str>) -> (okx_2pa_ag
         settings.validation.retry_max = 0;
     }
     let service = WebTradingService::new(settings);
-    *service.automation_enabled.write() = true;
-    *service.automation_symbol.write() = "TEST-USDT-SWAP".into();
-    *service.automation_timeframe.write() = "15m".into();
+    service.automation.write().enabled = true;
+    service.automation.write().symbol = "TEST-USDT-SWAP".into();
+    service.automation.write().timeframe = "15m".into();
     *service.orchestrator.write() = okx_2pa_agent::orchestrator::two_stage::TwoStageOrchestrator::new(
         service.settings.read().clone(),
         records,

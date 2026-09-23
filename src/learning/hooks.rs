@@ -390,6 +390,59 @@ impl TradingHook for ShadowTradingHook {
     }
 }
 
+/// Hook that verifies whether a trading decision meets the TypeSafe calibrated confidence threshold.
+pub struct TypeSafeConfidenceGuardHook {
+    pub min_confidence: Arc<RwLock<f64>>,
+}
+
+impl TypeSafeConfidenceGuardHook {
+    pub fn new(min_confidence: f64) -> Self {
+        Self {
+            min_confidence: Arc::new(RwLock::new(min_confidence)),
+        }
+    }
+
+    pub fn set_min_confidence(&self, val: f64) {
+        *self.min_confidence.write() = val;
+    }
+}
+
+impl TradingHook for TypeSafeConfidenceGuardHook {
+    fn name(&self) -> &str {
+        "TypeSafeConfidenceGuardHook"
+    }
+
+    fn pre_execution(&self, ctx: &PreExecutionContext) -> Result<HookAction, HookRejection> {
+        let action = ctx.decision.get("action").and_then(|v| v.as_str()).unwrap_or("WAIT");
+        if action != "OPEN" {
+            return Ok(HookAction::Proceed);
+        }
+
+        let min_conf = *self.min_confidence.read();
+        let typesafe_conf = ctx
+            .decision
+            .get("typesafe_confidence")
+            .and_then(|v| v.as_f64())
+            .or_else(|| {
+                ctx.decision
+                    .get("stage1_diagnosis")
+                    .and_then(|s1| s1.get("typesafe_confidence"))
+                    .and_then(|v| v.as_f64())
+            });
+
+        if let Some(conf) = typesafe_conf {
+            if conf < min_conf {
+                return Err(HookRejection::RiskLimitExceeded(format!(
+                    "TypeSafe 数学校准置信度 ({:.2}) 低于安全入场门槛 ({:.2})，拒绝开仓",
+                    conf, min_conf
+                )));
+            }
+        }
+
+        Ok(HookAction::Proceed)
+    }
+}
+
 /// Ordered lifecycle hook execution pipeline.
 pub struct HookPipeline {
     hooks: Vec<Arc<dyn TradingHook>>,
@@ -514,5 +567,45 @@ mod tests {
         assert!(resolved[0].r_multiple >= 2.0);
         assert_eq!(resolved[0].exit_reason, "take_profit");
         assert_eq!(shadow.active_positions().len(), 0);
+    }
+
+    #[test]
+    fn test_typesafe_confidence_guard_hook() {
+        let guard = Arc::new(TypeSafeConfidenceGuardHook::new(0.70));
+        let mut pipeline = HookPipeline::new();
+        pipeline.add_hook(guard.clone());
+
+        // 1. High confidence decision passes
+        let ctx_pass = PreExecutionContext {
+            symbol: "ETH-USDT-SWAP".to_string(),
+            timeframe: "15m".to_string(),
+            trading_system: "2pa_trend".to_string(),
+            decision: serde_json::json!({
+                "action": "OPEN",
+                "typesafe_confidence": 0.85
+            }),
+            account_balance_usd: 10000.0,
+            is_shadow_mode: false,
+        };
+        assert!(pipeline.run_pre_execution(&ctx_pass).is_ok());
+
+        // 2. Low confidence decision rejected
+        let ctx_reject = PreExecutionContext {
+            symbol: "ETH-USDT-SWAP".to_string(),
+            timeframe: "15m".to_string(),
+            trading_system: "2pa_trend".to_string(),
+            decision: serde_json::json!({
+                "action": "OPEN",
+                "typesafe_confidence": 0.45
+            }),
+            account_balance_usd: 10000.0,
+            is_shadow_mode: false,
+        };
+        let res = pipeline.run_pre_execution(&ctx_reject);
+        assert!(matches!(res, Err(HookRejection::RiskLimitExceeded(_))));
+
+        // 3. Dynamic adjustment of threshold
+        guard.set_min_confidence(0.40);
+        assert!(pipeline.run_pre_execution(&ctx_reject).is_ok());
     }
 }

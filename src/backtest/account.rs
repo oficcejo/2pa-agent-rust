@@ -78,7 +78,11 @@ impl VirtualAccount {
             initial_capital: config.initial_capital,
             cash: config.initial_capital,
             equity: config.initial_capital,
-            ct_val: config.ct_val.max(0.00001),
+            ct_val: if (config.ct_val - 0.01).abs() < 1e-6 && config.symbol.to_uppercase().starts_with("ETH") {
+                0.1
+            } else {
+                config.ct_val.max(0.00001)
+            },
             lot_sz: config.lot_sz.max(1.0),
             leverage: config.leverage.max(1.0),
             maintenance_margin_ratio: 0.01, // 1% maintenance margin

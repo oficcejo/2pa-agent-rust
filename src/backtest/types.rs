@@ -80,6 +80,10 @@ pub struct BacktestConfig {
     /// If false, uses deterministic diagnostic rule execution (zero LLM token cost).
     #[serde(default = "default_true")]
     pub allow_llm_calls: bool,
+
+    /// Whether to use TypeSafe System One (Jev) model for fast calibrated candidate evaluations.
+    #[serde(default)]
+    pub use_typesafe: bool,
 }
 
 fn default_symbol() -> String { "BTC-USDT-SWAP".to_string() }
@@ -123,6 +127,7 @@ impl Default for BacktestConfig {
             fixture_path: None,
             max_bars: default_max_bars(),
             allow_llm_calls: true,
+            use_typesafe: false,
         }
     }
 }

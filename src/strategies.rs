@@ -11,6 +11,7 @@ pub const SLIPPAGE_PER_SIDE: f64 = 0.0002;
 
 pub fn canonical(id: &str) -> Option<&'static str> {
     match id.trim().to_lowercase().as_str() {
+        "2pa_source" | "2pa_original" => Some("2pa_source"),
         "2pa" | "2pa_trend" => Some("2pa_trend"),
         "dog_walking" | "dog_reversion" | "遛狗" => Some("dog_reversion"),
         "dog_trend" => Some("dog_trend"),
@@ -94,9 +95,15 @@ fn trend(f: &KlineFrame, sign: f64) -> bool {
         && sign * (f.indicators.ema20[0] - f.indicators.ema20[5]) / a >= 0.1
 }
 
+fn trend_htf(h: &KlineFrame, sign: f64) -> bool {
+    let a = h.indicators.atr14[0];
+    // HTF price is not deeply counter-trend and HTF EMA20 is not sloping strongly against
+    sign * (h.bars[0].close - h.indicators.ema20[0]) >= -0.6 * a
+        && sign * (h.indicators.ema20[0] - h.indicators.ema20[4]) / a >= -0.05
+}
+
 /// Closed, confirmed pivots only; K1 and K2 cannot invent forward resistance.
-fn obstacle(f: &KlineFrame, sign: f64, min_dist: f64) -> Option<f64> {
-    let price = f.bars[0].close;
+fn obstacle(f: &KlineFrame, ref_price: f64, sign: f64, min_dist: f64) -> Option<f64> {
     (2..f.bars.len() - 1)
         .filter_map(|i| {
             let (b, newer, older) = (&f.bars[i], &f.bars[i - 1], &f.bars[i + 1]);
@@ -107,9 +114,9 @@ fn obstacle(f: &KlineFrame, sign: f64, min_dist: f64) -> Option<f64> {
             } else {
                 return None;
             };
-            (sign * (p - price) >= min_dist).then_some(p)
+            (sign * (p - ref_price) >= min_dist).then_some(p)
         })
-        .min_by(|a, b| ((a - price).abs()).total_cmp(&(b - price).abs()))
+        .min_by(|a, b| ((a - ref_price).abs()).total_cmp(&(b - ref_price).abs()))
 }
 
 pub fn evidence(
@@ -120,7 +127,7 @@ pub fn evidence(
 ) -> Result<Evidence> {
     let id = canonical(system).unwrap_or("");
     ensure!(
-        ["2pa_trend", "dog_reversion", "dog_trend"].contains(&id),
+        ["2pa_source", "2pa_trend", "dog_reversion", "dog_trend"].contains(&id),
         "该模式仅供观察，不允许自动开仓"
     );
     ensure!(ready(f), "已收盘行情或指标预热不足");
@@ -152,43 +159,46 @@ pub fn evidence(
     let slope = (owner - f.indicators.sma170[5]) / (5.0 * a);
     let confirmation = sign * (b[0].close - b[0].open) > 0.0
         && if sign > 0.0 {
-            close > b[1].high
+            close > b[1].high || (b[0].high > b[1].high && close >= b[1].close)
         } else {
-            close < b[1].low
+            close < b[1].low || (b[0].low < b[1].low && close <= b[1].close)
         };
     ensure!(confirmation, "K1 尚未收盘突破前棒且形成同向实体");
     let setup;
-    let mut bound = obstacle(f, sign, 1.8 * a).or_else(|| obstacle(h, sign, 1.8 * a));
+    let mut bound = obstacle(f, close, sign, 1.8 * a).or_else(|| obstacle(h, close, sign, 1.8 * a));
     match id {
         "dog_reversion" => {
-            let extended = (1..=5).any(|i| {
-                sign * (f.indicators.sma170[i] - b[i].close) / f.indicators.atr14[i] >= 2.5
+            let extended = (1..=12.min(b.len() - 1)).any(|i| {
+                sign * (f.indicators.sma170[i] - b[i].close) / f.indicators.atr14[i] >= 1.6
+                    || (sign * (f.indicators.sma170[i] - b[i].close) / f.indicators.sma170[i] >= 0.012)
             });
-            ensure!(extended, "近五根没有出现至少 2.5 ATR 的反向偏离");
-            ensure!(
-                sign * (close - f.indicators.sma14[0]) > 0.0
-                    && sign * (b[1].close - f.indicators.sma14[1]) <= 0.0,
-                "尚未确认收回/跌破 SMA14"
-            );
-            let recent_extreme = if sign > 0.0 { b[1].low } else { b[1].high };
-            let prior_extreme = b[3..8]
+            ensure!(extended, "近十二根没有出现至少 1.6 ATR 或 1.2% 的反向偏离");
+            let reclaimed_sma14 = sign * (close - f.indicators.sma14[0]) >= -0.2 * a
+                && (0..=4.min(b.len() - 1)).any(|j| sign * (b[j].close - f.indicators.sma14[j]) > 0.0);
+            ensure!(reclaimed_sma14, "尚未确认站上/跌破 SMA14 动量线");
+
+            let recent_extreme = if sign > 0.0 {
+                b[..=2.min(b.len() - 1)].iter().map(|x| x.low).fold(f64::INFINITY, f64::min)
+            } else {
+                b[..=2.min(b.len() - 1)].iter().map(|x| x.high).fold(f64::NEG_INFINITY, f64::max)
+            };
+            let prior_extreme = b[2..=10.min(b.len() - 1)]
                 .iter()
                 .map(|x| if sign > 0.0 { x.low } else { -x.high })
                 .fold(f64::INFINITY, f64::min)
                 * sign;
             ensure!(
-                (recent_extreme - prior_extreme).abs() <= 0.5 * a,
+                (recent_extreme - prior_extreme).abs() <= 1.2 * a,
                 "缺少对称的二次极值测试"
             );
             ensure!(
-                (b[1].close - b[3].close).abs() <= (b[3].close - b[5].close).abs(),
-                "反向推动尚未减速"
+                sign * slope >= -0.15,
+                "主人均线 (SMA170) 斜率过度顺延，禁止逆势摸顶抄底"
             );
             ensure!(
-                sign * slope >= -0.05 && !trend(h, -sign),
-                "本级别或高周期仍在强逆向趋势中"
+                sign * (owner - close) >= 1.2 * a,
+                "确认后已无充分回归 SMA170 的空间"
             );
-            ensure!(sign * (owner - close) > 0.0, "确认后已无回归 SMA170 的空间");
             bound = Some(
                 bound
                     .map(|p| if sign * (p - owner) < 0.0 { p } else { owner })
@@ -198,21 +208,45 @@ pub fn evidence(
         }
         "dog_trend" => {
             ensure!(
-                trend(h, sign) && sign * slope >= 0.02,
+                trend_htf(h, sign) && sign * slope >= -0.01,
                 "SMA170 斜率或高周期趋势不支持方向"
             );
+            let touched_sma170 = (1..=4.min(b.len() - 1)).any(|j| {
+                (b[j].close - f.indicators.sma170[j]).abs() <= 0.8 * a
+                    || (b[j].low <= f.indicators.sma170[j] + 0.4 * a && b[j].high >= f.indicators.sma170[j] - 0.4 * a)
+            });
             ensure!(
-                (b[1].close - f.indicators.sma170[1]).abs() <= 0.5 * a
-                    && b[1].low <= f.indicators.sma170[1] + 0.2 * a
-                    && b[1].high >= f.indicators.sma170[1] - 0.2 * a
-                    && sign * (close - owner) > 0.0,
+                touched_sma170 && sign * (close - owner) > 0.0,
                 "尚未确认 SMA170 附近回踩/反抽"
             );
             setup = "sma170_retest";
         }
+        "2pa_source" => {
+            ensure!(
+                trend(f, sign) && !trend(h, -sign),
+                "本级别趋势不明确或高周期强逆向"
+            );
+            let touched_ema = (1..=6.min(b.len() - 1)).any(|j| {
+                if sign > 0.0 {
+                    b[j].low <= f.indicators.ema20[j] + 0.8 * a
+                } else {
+                    b[j].high >= f.indicators.ema20[j] - 0.8 * a
+                }
+            });
+            let has_two_attempts = (2..=7.min(b.len() - 2)).any(|j| {
+                if sign > 0.0 {
+                    b[j].low < b[j + 1].low && b[1].low <= b[j].low + 0.6 * a
+                } else {
+                    b[j].high > b[j + 1].high && b[1].high >= b[j].high - 0.6 * a
+                }
+            }) || (b[1].close - f.indicators.ema20[1]).abs() <= 1.2 * a;
+
+            ensure!(touched_ema && has_two_attempts, "未识别到有效的 2PA 回踩结构");
+            setup = "2pa_second_entry";
+        }
         _ => {
             ensure!(
-                trend(f, sign) && trend(h, sign),
+                trend(f, sign) && trend_htf(h, sign),
                 "本级别与高周期趋势未同向确认"
             );
             let level = if sign > 0.0 {
@@ -224,27 +258,59 @@ pub fn evidence(
                 b[3..10].iter().map(|x| x.low).fold(f64::INFINITY, f64::min)
             };
             let breakout_retest = sign * (b[2].close - level) > 0.0
-                && b[1].low <= level + 0.2 * a
-                && b[1].high >= level - 0.2 * a
-                && sign * (b[1].close - level) >= -0.2 * a
+                && b[1].low <= level + 0.35 * a
+                && b[1].high >= level - 0.35 * a
+                && sign * (b[1].close - level) >= -0.35 * a
                 && sign * (close - level) > 0.0;
-            // Mechanical H2/L2 subset: pullback, first attempt, renewed pullback,
-            // then a closed second trigger; no LLM pattern labels are trusted.
-            let second = if sign > 0.0 {
+
+            let second_5bar = if sign > 0.0 {
                 b[4].high < b[5].high
                     && b[3].high > b[4].high
                     && b[2].high <= b[3].high
                     && b[1].low < b[2].low
-                    && close > b[3].high
             } else {
                 b[4].low > b[5].low
                     && b[3].low < b[4].low
                     && b[2].low >= b[3].low
                     && b[1].high > b[2].high
-                    && close < b[3].low
             };
+
+            let second_6bar = if sign > 0.0 {
+                b[5].high < b[6].high
+                    && b[4].high > b[5].high
+                    && b[3].high <= b[4].high
+                    && b[1].low < b[3].low
+            } else {
+                b[5].low > b[6].low
+                    && b[4].low < b[5].low
+                    && b[3].low >= b[4].low
+                    && b[1].high > b[3].high
+            };
+
+            let second_4bar = if sign > 0.0 {
+                b[3].high < b[4].high
+                    && b[2].high > b[3].high
+                    && b[2].high < b[4].high
+                    && b[1].low < b[2].low
+            } else {
+                b[3].low > b[4].low
+                    && b[2].low < b[3].low
+                    && b[2].low > b[4].low
+                    && b[1].high > b[2].high
+            };
+
+            let is_two_legged = (second_5bar || second_6bar || second_4bar)
+                && (1..=5).any(|j| {
+                    if sign > 0.0 {
+                        b[j].low <= f.indicators.ema20[j] + 0.8 * a
+                    } else {
+                        b[j].high >= f.indicators.ema20[j] - 0.8 * a
+                    }
+                })
+                && (b[1].close - f.indicators.ema20[1]).abs() <= 1.5 * a;
+
             ensure!(
-                breakout_retest || (second && (b[1].close - f.indicators.ema20[1]).abs() <= a),
+                breakout_retest || is_two_legged,
                 "没有确认的突破回踩或 H2/L2 二次入场"
             );
             setup = if breakout_retest {
@@ -256,10 +322,12 @@ pub fn evidence(
     }
     let structure = if id == "dog_reversion" {
         &b[..8]
+    } else if id == "2pa_source" {
+        &b[..4]
     } else {
         &b[..3]
     };
-    let invalidation = if sign > 0.0 {
+    let raw_invalidation = if sign > 0.0 {
         structure
             .iter()
             .map(|x| x.low)
@@ -270,14 +338,31 @@ pub fn evidence(
             .map(|x| x.high)
             .fold(f64::NEG_INFINITY, f64::max)
     };
-    let min_target_dist = (((close - invalidation).abs() + 0.3 * a) * 1.65).max(2.5 * a);
+    let invalidation = if id == "2pa_source" {
+        if sign > 0.0 {
+            raw_invalidation.max(close - 2.2 * a).min(close - 0.8 * a)
+        } else {
+            raw_invalidation.min(close + 2.2 * a).max(close + 0.8 * a)
+        }
+    } else if id == "dog_reversion" {
+        if sign > 0.0 {
+            raw_invalidation.max(close - 2.5 * a).min(close - 0.8 * a)
+        } else {
+            raw_invalidation.min(close + 2.5 * a).max(close + 0.8 * a)
+        }
+    } else if sign > 0.0 {
+        raw_invalidation.max(close - 2.5 * a)
+    } else {
+        raw_invalidation.min(close + 2.5 * a)
+    };
+    let min_target_dist = (((close - invalidation).abs() + 0.25 * a) * 1.55).max(if id == "dog_reversion" { 1.2 * a } else { 2.5 * a });
     let bound = bound
         .filter(|p| sign * (*p - close) >= min_target_dist)
-        .or_else(|| obstacle(f, sign, min_target_dist))
-        .or_else(|| obstacle(h, sign, min_target_dist))
+        .or_else(|| obstacle(f, close, sign, min_target_dist))
+        .or_else(|| obstacle(h, close, sign, min_target_dist))
         .or_else(|| Some(close + sign * (min_target_dist + 0.5 * a)));
     let target_bound =
-        bound.ok_or_else(|| anyhow::anyhow!("缺少前方已确认结构目标"))? - sign * 0.1 * a;
+        bound.ok_or_else(|| anyhow::anyhow!("缺少前方已确认结构目标"))? - sign * 0.02 * a;
     Ok(Evidence {
         symbol: f.symbol.clone(),
         timeframe: f.timeframe.clone(),

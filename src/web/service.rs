@@ -127,16 +127,23 @@ pub struct BacktestJobRecord {
     pub report: Option<crate::backtest::types::BacktestReport>,
 }
 
+/// Consistent automation target: one lock so a tick never mixes symbol from
+/// one write with timeframe/session from another.
+#[derive(Debug, Clone)]
+pub struct AutomationTarget {
+    pub enabled: bool,
+    pub symbol: String,
+    pub timeframe: String,
+    pub session: TradingSession,
+}
+
 pub struct WebTradingService {
     pub settings: Arc<RwLock<Settings>>,
     pub okx_client: Arc<RwLock<OKXClient>>,
     pub executor: Arc<RwLock<OKXTradeExecutor>>,
     pub orchestrator: Arc<RwLock<TwoStageOrchestrator>>,
     pub current_trading_system: Arc<RwLock<String>>,
-    pub automation_enabled: Arc<RwLock<bool>>,
-    pub automation_symbol: Arc<RwLock<String>>,
-    pub automation_timeframe: Arc<RwLock<String>>,
-    pub automation_session: Arc<RwLock<TradingSession>>,
+    pub automation: Arc<RwLock<AutomationTarget>>,
     pub latest_analysis: Arc<RwLock<Option<Value>>>,
     pub last_closed_ts: Arc<RwLock<HashMap<(String, String), i64>>>,
     pub equity_history: Arc<RwLock<Vec<Value>>>,
@@ -220,6 +227,11 @@ impl WebTradingService {
         let mut pipeline = crate::learning::HookPipeline::new();
         pipeline.add_hook(drawdown_guard.clone());
         pipeline.add_hook(shadow_hook.clone());
+        if settings.typesafe.enabled {
+            pipeline.add_hook(Arc::new(crate::learning::TypeSafeConfidenceGuardHook::new(
+                settings.typesafe.min_confidence,
+            )));
+        }
 
         Self {
             settings: Arc::new(RwLock::new(settings)),
@@ -227,10 +239,12 @@ impl WebTradingService {
             executor: Arc::new(RwLock::new(executor)),
             orchestrator: Arc::new(RwLock::new(orchestrator)),
             current_trading_system: Arc::new(RwLock::new(initial_system)),
-            automation_enabled: Arc::new(RwLock::new(false)),
-            automation_symbol: Arc::new(RwLock::new("BTC-USDT".to_string())),
-            automation_timeframe: Arc::new(RwLock::new("15m".to_string())),
-            automation_session: Arc::new(RwLock::new(session)),
+            automation: Arc::new(RwLock::new(AutomationTarget {
+                enabled: false,
+                symbol: "BTC-USDT".to_string(),
+                timeframe: "15m".to_string(),
+                session,
+            })),
             latest_analysis: Arc::new(RwLock::new(None)),
             last_closed_ts: Arc::new(RwLock::new(HashMap::new())),
             equity_history: Arc::new(RwLock::new(Vec::new())),
@@ -251,10 +265,10 @@ impl WebTradingService {
 
     pub fn status(&self) -> Value {
         let settings = self.settings.read();
-        let session = self.automation_session.read();
-        let auto_enabled = *self.automation_enabled.read();
-        let symbol = self.automation_symbol.read().clone();
-        let timeframe = self.automation_timeframe.read().clone();
+        let session = self.automation.read().session.clone();
+        let auto_enabled = self.automation.read().enabled;
+        let symbol = self.automation.read().symbol.clone();
+        let timeframe = self.automation.read().timeframe.clone();
         let latest = self.latest_analysis.read().clone();
         let trading_system = self.current_trading_system.read().clone();
 
@@ -472,7 +486,7 @@ LEARNING_SHADOW_TRADING_ENABLED={}
             let offset_sec = chrono::Utc::now().with_timezone(&tz).offset().fix().local_minus_utc();
             self.drawdown_guard.set_timezone_offset_ms((offset_sec as i64) * 1000);
         }
-        *self.automation_enabled.write() = false;
+        self.automation.write().enabled = false;
 
         let creds = if new_settings.is_okx_configured() {
             Some(OKXCredentials::new(
@@ -513,6 +527,16 @@ LEARNING_SHADOW_TRADING_ENABLED={}
             records_dir(),
         );
 
+        let mut new_pipeline = crate::learning::HookPipeline::new();
+        new_pipeline.add_hook(self.drawdown_guard.clone());
+        new_pipeline.add_hook(self.shadow_hook.clone());
+        if new_settings.typesafe.enabled {
+            new_pipeline.add_hook(Arc::new(crate::learning::TypeSafeConfidenceGuardHook::new(
+                new_settings.typesafe.min_confidence,
+            )));
+        }
+        *self.hook_pipeline.write() = new_pipeline;
+
         *self.current_trading_system.write() = new_settings.general.trading_system.clone();
         *self.settings.write() = new_settings;
         *self.okx_client.write() = new_client;
@@ -539,7 +563,7 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         if enabled {
             anyhow::ensure!(settings.okx.demo_trading || settings.okx.live_trading_acknowledged, "实盘执行未授权，请在服务器设置 OKX_LIVE_TRADING_ACKNOWLEDGED=true");
         }
-        if enabled && !*self.automation_enabled.read() {
+        if enabled && !self.automation.read().enabled {
             let required = if settings.okx.demo_trading { "ENABLE DEMO" } else { "ENABLE LIVE" };
             if confirmation.trim().to_uppercase() != required {
                 return Err(anyhow!("confirmation must be {}", required));
@@ -555,7 +579,7 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                 anyhow::ensure!(chrono::NaiveTime::parse_from_str(time, "%H:%M").is_ok(), "无效交易时段");
             }
         }
-        let cur_session = self.automation_session.read().clone();
+        let cur_session = self.automation.read().session.clone();
         let session = build_trading_session(
             session_preset.unwrap_or(&cur_session.preset),
             session_timezone.unwrap_or(&cur_session.timezone_name),
@@ -570,10 +594,13 @@ LEARNING_SHADOW_TRADING_ENABLED={}
             }
         }
 
-        *self.automation_enabled.write() = enabled;
-        *self.automation_symbol.write() = symbol.trim().to_uppercase();
-        *self.automation_timeframe.write() = timeframe.to_string();
-        *self.automation_session.write() = session;
+        {
+            let mut auto = self.automation.write();
+            auto.enabled = enabled;
+            auto.symbol = symbol.trim().to_uppercase();
+            auto.timeframe = timeframe.to_string();
+            auto.session = session;
+        }
 
         drop(settings);
         Ok(self.status())
@@ -1336,7 +1363,7 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         let settings = self.settings.read();
         anyhow::ensure!(settings.is_okx_configured(), "OKX 凭据未配置");
         anyhow::ensure!(settings.okx.demo_trading || settings.okx.live_trading_acknowledged, "实盘执行未授权");
-        anyhow::ensure!(*self.automation_enabled.read(), "交易执行开关未开启");
+        anyhow::ensure!(self.automation.read().enabled, "交易执行开关未开启");
         Ok(())
     }
 
@@ -1344,7 +1371,7 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         let Ok(_tick_guard) = self.automation_tick_lock.try_lock() else { return Ok(()); };
         let now = Utc::now().timestamp_millis();
         self.automation_runtime.write().last_tick_ms = Some(now);
-        if !*self.automation_enabled.read() {
+        if !self.automation.read().enabled {
             self.set_automation_phase("disabled", "自动交易未启用");
             return Ok(());
         }
@@ -1356,10 +1383,16 @@ LEARNING_SHADOW_TRADING_ENABLED={}
             let mut message = format!("{error:#}");
             {
                 let settings = self.settings.read();
-                for secret in [&settings.provider.api_key, &settings.okx.api_key,
-                    &settings.okx.secret_key, &settings.okx.passphrase, &settings.web_auth_token] {
-                    if !secret.is_empty() { message = message.replace(secret, "[redacted]"); }
-                }
+                message = crate::util::mask::redact_secrets(
+                    &message,
+                    &[
+                        &settings.provider.api_key,
+                        &settings.okx.api_key,
+                        &settings.okx.secret_key,
+                        &settings.okx.passphrase,
+                        &settings.web_auth_token,
+                    ],
+                );
             }
             message = message.chars().take(2000).collect();
             {
@@ -1375,8 +1408,8 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                 meta: crate::records::schema::RecordMeta {
                     timestamp_local_iso: crate::util::timefmt::now_local_iso(),
                     timestamp_local_ms: crate::util::timefmt::now_local_ms(),
-                    symbol: self.automation_symbol.read().clone(),
-                    timeframe: self.automation_timeframe.read().clone(),
+                    symbol: self.automation.read().symbol.clone(),
+                    timeframe: self.automation.read().timeframe.clone(),
                     bar_count: 0,
                     ai_provider: Value::Null,
                     decision_stance: self.settings.read().general.decision_stance.clone(),
@@ -1408,13 +1441,15 @@ LEARNING_SHADOW_TRADING_ENABLED={}
     }
 
     async fn run_automation_tick(&self) -> Result<()> {
-        let auto_enabled = *self.automation_enabled.read();
-        let session = self.automation_session.read().clone();
+        let (auto_enabled, session) = {
+            let auto = self.automation.read();
+            (auto.enabled, auto.session.clone())
+        };
         if !auto_enabled { return Ok(()); }
         self.ensure_execution_enabled()?;
 
-        let symbol = self.automation_symbol.read().clone();
-        let timeframe = self.automation_timeframe.read().clone();
+        let symbol = self.automation.read().symbol.clone();
+        let timeframe = self.automation.read().timeframe.clone();
 
         {
             self.set_automation_phase("checking_orders", "检查并清理到期入场挂单");
@@ -1616,6 +1651,7 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         let cache = self.decision_cache.clone();
         let okx_client = self.okx_client.read().clone();
         let ai_client = self.orchestrator.read().ai_client.clone();
+        let typesafe_client = self.orchestrator.read().typesafe_client.clone();
 
         tokio::spawn(async move {
             let jobs_map_cb = Arc::clone(&jobs_map);
@@ -1636,6 +1672,13 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                 _ => config.max_bars.max(300),
             };
             let synth_count = (warmup_bars + trading_bars + 30).max(config.max_bars.max(500));
+            let base_price = if config.symbol.to_uppercase().contains("ETH") {
+                2650.0
+            } else if config.symbol.to_uppercase().contains("BTC") {
+                65000.0
+            } else {
+                100.0
+            };
 
             let bars_res = if let Some(ref path_str) = config.fixture_path {
                 crate::backtest::load_candles_from_file(std::path::Path::new(path_str))
@@ -1645,7 +1688,7 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                 Ok(crate::backtest::generate_synthetic_candles_for_strategy(
                     &config.strategy_id,
                     synth_count,
-                    65000.0,
+                    base_price,
                     interval_ms,
                     candle_start_ts,
                 ))
@@ -1666,7 +1709,7 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                         Ok(crate::backtest::generate_synthetic_candles_for_strategy(
                             &config.strategy_id,
                             synth_count,
-                            65000.0,
+                            base_price,
                             interval_ms,
                             candle_start_ts,
                         ))
@@ -1676,7 +1719,7 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                         Ok(crate::backtest::generate_synthetic_candles_for_strategy(
                             &config.strategy_id,
                             synth_count,
-                            65000.0,
+                            base_price,
                             interval_ms,
                             candle_start_ts,
                         ))
@@ -1700,7 +1743,10 @@ LEARNING_SHADOW_TRADING_ENABLED={}
             };
 
             // 2. Run engine
-            let engine = crate::backtest::BacktestEngine::new(config.clone(), cache, Some(Arc::new(ai_client)));
+            let mut engine = crate::backtest::BacktestEngine::new(config.clone(), cache, Some(Arc::new(ai_client)));
+            if let Some(tc) = typesafe_client {
+                engine = engine.with_typesafe_client(Arc::new(tc));
+            }
             match engine.run(&jid, &bars_asc, Some(progress_cb)).await {
                 Ok(report) => {
                     if let Some(r) = jobs_map.write().get_mut(&jid) {

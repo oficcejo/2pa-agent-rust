@@ -1,6 +1,27 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::OnceLock;
+
+fn re_think() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?s)<think>.*?</think>").expect("think regex"))
+}
+
+fn re_fenced() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?s)```(?:json)?\s*(.*?)\s*```").expect("fence regex"))
+}
+
+fn re_leading_fence() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)^```(?:json)?\s*\n?").expect("leading fence regex"))
+}
+
+fn re_trailing_fence() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\n?```\s*$").expect("trailing fence regex"))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationError {
@@ -17,15 +38,15 @@ pub struct ValidationError {
 }
 
 pub fn strip_markdown_fences(text: &str) -> String {
-    let without_think = Regex::new(r"(?s)<think>.*?</think>").unwrap().replace_all(text, "");
+    let without_think = re_think().replace_all(text, "");
     let t = without_think.trim();
-    if let Some(caps) = Regex::new(r"(?s)```(?:json)?\s*(.*?)\s*```").unwrap().captures(t) {
+    if let Some(caps) = re_fenced().captures(t) {
         if let Some(m) = caps.get(1) {
             return m.as_str().trim().to_string();
         }
     }
-    let without_leading = Regex::new(r"(?i)^```(?:json)?\s*\n?").unwrap().replace(t, "");
-    let without_trailing = Regex::new(r"\n?```\s*$").unwrap().replace(&without_leading, "");
+    let without_leading = re_leading_fence().replace(t, "");
+    let without_trailing = re_trailing_fence().replace(&without_leading, "");
     without_trailing.trim().to_string()
 }
 

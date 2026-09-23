@@ -13,11 +13,12 @@ use crate::util::timefmt::{now_local_iso, now_local_ms};
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct TwoStageOrchestrator {
     pub ai_client: AIClient,
+    pub typesafe_client: Option<crate::ai::typesafe::TypeSafeClient>,
     pub prompt_dir: Option<PathBuf>,
     pub experience_dir: Option<PathBuf>,
     pub records_dir: PathBuf,
@@ -35,8 +36,20 @@ impl TwoStageOrchestrator {
             settings.provider.stage_timeout_seconds,
         );
 
+        let typesafe_client = if settings.is_typesafe_configured() {
+            Some(crate::ai::typesafe::TypeSafeClient::new(
+                &settings.typesafe.model,
+                &settings.typesafe.base_url,
+                &settings.typesafe.api_key,
+                settings.typesafe.timeout_seconds,
+            ))
+        } else {
+            None
+        };
+
         Self {
             ai_client,
+            typesafe_client,
             prompt_dir: Some(PathBuf::from("prompt_engineering")),
             experience_dir: Some(PathBuf::from("experience")),
             records_dir,
@@ -90,12 +103,56 @@ impl TwoStageOrchestrator {
         let hard_evidence = crate::strategies::diagnostics(system, frame, htf_frame);
         let context = format!("{}\n程序候选证据（不得篡改）：{}", htf_context.unwrap_or(""), hard_evidence);
         let htf_context = Some(context.as_str());
-        let stage1_prompt = build_stage1_prompt_for_system(system, frame, self.prompt_dir.as_deref(), htf_context);
-        let (mut stage1_diagnosis, stage1_reply, stage1_messages) = call_and_validate_stage1(
-            &self.ai_client,
-            &stage1_prompt,
-            self.settings.validation.retry_max,
-        ).await.context("第一阶段市场分析失败")?;
+        let (mut stage1_diagnosis, stage1_reply, stage1_messages) = if self.typesafe_client.is_some() {
+            if let Some(res) = self.evaluate_typesafe_stage1(system, frame, htf_frame, &hard_evidence).await {
+                res
+            } else if self.settings.typesafe.fail_closed {
+                warn!(
+                    "TypeSafe evaluation unavailable and fail_closed=true; forcing WAIT for {} {}",
+                    frame.symbol, frame.timeframe
+                );
+                let diagnosis = serde_json::json!({
+                    "market_regime": "unknown",
+                    "typesafe_evaluated": true,
+                    "typesafe_error": true,
+                    "gate_result": "wait",
+                    "reasoning": "TypeSafe 评估失败且 fail_closed=true，本次观望，不回落主模型",
+                    "program_candidates": hard_evidence
+                });
+                let reply = crate::ai::client::LLMReply {
+                    content: diagnosis.to_string(),
+                    reasoning_content: Some("TypeSafe fail_closed".to_string()),
+                    usage: crate::ai::client::Usage::default(),
+                    latency_ms: 0,
+                };
+                let messages = vec![
+                    crate::ai::client::ChatMessage {
+                        role: "system".to_string(),
+                        content: "TypeSafe fail_closed".to_string(),
+                    },
+                    crate::ai::client::ChatMessage {
+                        role: "assistant".to_string(),
+                        content: reply.content.clone(),
+                    },
+                ];
+                (diagnosis, reply, messages)
+            } else {
+                info!("TypeSafe evaluation fallback to standard LLM Stage 1 diagnosis");
+                let stage1_prompt = build_stage1_prompt_for_system(system, frame, self.prompt_dir.as_deref(), htf_context);
+                call_and_validate_stage1(
+                    &self.ai_client,
+                    &stage1_prompt,
+                    self.settings.validation.retry_max,
+                ).await.context("第一阶段市场分析失败")?
+            }
+        } else {
+            let stage1_prompt = build_stage1_prompt_for_system(system, frame, self.prompt_dir.as_deref(), htf_context);
+            call_and_validate_stage1(
+                &self.ai_client,
+                &stage1_prompt,
+                self.settings.validation.retry_max,
+            ).await.context("第一阶段市场分析失败")?
+        };
 
         stage1_diagnosis["program_candidates"] = hard_evidence;
         if stage1_diagnosis["program_candidates"]["long"]["eligible"] != true
@@ -210,6 +267,174 @@ impl TwoStageOrchestrator {
         Ok(record)
     }
 
+    /// Evaluates market condition using TypeSafe System One (Jev model).
+    /// Returns Stage 1 diagnosis, mock LLM reply, and synthetic messages.
+    pub async fn evaluate_typesafe_stage1(
+        &self,
+        system: &str,
+        frame: &KlineFrame,
+        _htf_frame: Option<&KlineFrame>,
+        hard_evidence: &Value,
+    ) -> Option<(Value, crate::ai::client::LLMReply, Vec<crate::ai::client::ChatMessage>)> {
+        let client = self.typesafe_client.as_ref()?;
+
+        let last_bar = frame.bars.first()?;
+        let ema20 = frame.indicators.ema20.first().copied().unwrap_or(last_bar.close);
+        let sma170 = frame.indicators.sma170.first().copied().unwrap_or(last_bar.close);
+        let atr = frame.indicators.atr14.first().copied().unwrap_or(last_bar.close * 0.01);
+
+        let recent_bars: Vec<serde_json::Value> = frame
+            .bars
+            .iter()
+            .take(5)
+            .rev()
+            .map(|b| {
+                serde_json::json!({
+                    "open": b.open,
+                    "high": b.high,
+                    "low": b.low,
+                    "close": b.close,
+                    "volume": b.volume,
+                    "bullish": b.close >= b.open
+                })
+            })
+            .collect();
+
+        let state = serde_json::json!({
+            "symbol": frame.symbol,
+            "timeframe": frame.timeframe,
+            "strategy": system,
+            "latest_bar": {
+                "open": last_bar.open,
+                "high": last_bar.high,
+                "low": last_bar.low,
+                "close": last_bar.close,
+                "volume": last_bar.volume
+            },
+            "indicators": {
+                "ema20": ema20,
+                "sma170": sma170,
+                "atr": atr,
+                "dist_to_ema20_atr": (last_bar.close - ema20) / (atr.max(1e-6))
+            },
+            "recent_bars": recent_bars,
+            "program_candidates": hard_evidence
+        });
+
+        let mut questions = std::collections::HashMap::new();
+
+        let mut regime_opts = std::collections::HashMap::new();
+        regime_opts.insert(
+            "bull_trend".to_string(),
+            "Price above EMA20 with rising moving averages and higher highs".to_string(),
+        );
+        regime_opts.insert(
+            "bear_trend".to_string(),
+            "Price below EMA20 with declining moving averages and lower lows".to_string(),
+        );
+        regime_opts.insert(
+            "range_chop".to_string(),
+            "Price oscillating around flat moving averages without directional follow-through".to_string(),
+        );
+        questions.insert(
+            "market_regime".to_string(),
+            crate::ai::typesafe::TypeSafeQuestion::choice(
+                "Classify the prevailing market trend structure.",
+                regime_opts,
+            ),
+        );
+
+        questions.insert(
+            "setup_valid".to_string(),
+            crate::ai::typesafe::TypeSafeQuestion::noul_with_criteria(
+                format!(
+                    "Does the recent price action confirm an actionable {} trade setup without immediate false breakout risk?",
+                    system
+                ),
+                "Setup is confirmed with high conviction directional momentum",
+                "Setup is unconfirmed, overlapping chop, or showing rejection against the trade",
+            ),
+        );
+
+        questions.insert(
+            "bar_quality".to_string(),
+            crate::ai::typesafe::TypeSafeQuestion::score(
+                "Score the signal bar body saturation and momentum quality.",
+                vec![
+                    "0: Weak doji or opposing tail".to_string(),
+                    "1: Moderate body with directional close".to_string(),
+                    "2: Strong trend bar closing decisively near extreme".to_string(),
+                ],
+            ),
+        );
+
+        match client.evaluate(&state, &questions).await {
+            Ok(resp) => {
+                let regime_ans = resp.answers.get("market_regime");
+                let setup_ans = resp.answers.get("setup_valid");
+                let bar_ans = resp.answers.get("bar_quality");
+
+                let choice_str = regime_ans
+                    .and_then(|a| a.choice.clone())
+                    .unwrap_or_else(|| "range_chop".to_string());
+                let confidence = regime_ans.map(|a| a.effective_confidence()).unwrap_or(0.5);
+                let setup_noul = setup_ans.and_then(|a| a.noul).unwrap_or(0.0);
+                let bar_score = bar_ans.and_then(|a| a.score).unwrap_or(1.0);
+
+                let min_conf = self.settings.typesafe.min_confidence;
+                let min_noul = self.settings.typesafe.min_noul_threshold;
+
+                let is_proceed = confidence >= min_conf && setup_noul >= min_noul;
+
+                let diagnosis = serde_json::json!({
+                    "market_regime": choice_str,
+                    "typesafe_evaluated": true,
+                    "typesafe_confidence": confidence,
+                    "typesafe_setup_noul": setup_noul,
+                    "typesafe_bar_quality_score": bar_score,
+                    "gate_result": if is_proceed { "proceed" } else { "wait" },
+                    "reasoning": format!(
+                        "TypeSafe Jev System 1: regime={}, confidence={:.2} (min={:.2}), setup_noul={:.2} (min={:.2}), bar_score={:.2} => gate={}",
+                        choice_str, confidence, min_conf, setup_noul, min_noul, bar_score, if is_proceed { "proceed" } else { "wait" }
+                    ),
+                    "program_candidates": hard_evidence
+                });
+
+                let reply = crate::ai::client::LLMReply {
+                    content: diagnosis.to_string(),
+                    reasoning_content: Some(format!("TypeSafe System One Jev (latency: {}ms)", resp.latency_ms)),
+                    usage: crate::ai::client::Usage {
+                        prompt_tokens: resp.usage.input_tokens,
+                        completion_tokens: resp.usage.output_tokens,
+                        total_tokens: resp.usage.input_tokens + resp.usage.output_tokens,
+                    },
+                    latency_ms: resp.latency_ms,
+                };
+
+                let messages = vec![
+                    crate::ai::client::ChatMessage {
+                        role: "system".to_string(),
+                        content: "TypeSafe AI System One Evaluation".to_string(),
+                    },
+                    crate::ai::client::ChatMessage {
+                        role: "assistant".to_string(),
+                        content: reply.content.clone(),
+                    },
+                ];
+
+                info!(
+                    "TypeSafe Stage 1 evaluation complete: regime={}, conf={:.2}, noul={:.2} in {}ms",
+                    choice_str, confidence, setup_noul, resp.latency_ms
+                );
+
+                Some((diagnosis, reply, messages))
+            }
+            Err(e) => {
+                tracing::warn!("TypeSafe evaluation error: {}", e);
+                None
+            }
+        }
+    }
 }
 
 

@@ -42,6 +42,50 @@ impl Default for AIProviderSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeSafeSettings {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_typesafe_model")]
+    pub model: String,
+    #[serde(default = "default_typesafe_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: f64,
+    #[serde(default = "default_min_noul")]
+    pub min_noul_threshold: f64,
+    #[serde(default = "default_typesafe_timeout")]
+    pub timeout_seconds: u64,
+    /// When TypeSafe is enabled and evaluation fails, fail closed (WAIT)
+    /// instead of falling back to the primary LLM Stage 1. Recommended for live
+    /// trading so a gate outage cannot silently open the trade path.
+    #[serde(default = "default_true")]
+    pub fail_closed: bool,
+}
+
+fn default_typesafe_model() -> String { "jev-latest".to_string() }
+fn default_typesafe_base_url() -> String { "https://api.typesafe.ai/v1".to_string() }
+fn default_min_confidence() -> f64 { 0.70 }
+fn default_min_noul() -> f64 { 0.65 }
+fn default_typesafe_timeout() -> u64 { 15 }
+
+impl Default for TypeSafeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: default_typesafe_model(),
+            base_url: default_typesafe_base_url(),
+            api_key: String::new(),
+            min_confidence: default_min_confidence(),
+            min_noul_threshold: default_min_noul(),
+            timeout_seconds: default_typesafe_timeout(),
+            fail_closed: default_true(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralSettings {
     #[serde(default = "default_analysis_bar_count")]
     pub analysis_bar_count: usize,
@@ -351,6 +395,8 @@ pub struct Settings {
     pub okx: OKXSettings,
     #[serde(default)]
     pub learning: LearningSettings,
+    #[serde(default)]
+    pub typesafe: TypeSafeSettings,
 }
 
 impl Settings {
@@ -486,6 +532,31 @@ impl Settings {
             settings.learning.shadow_trading_enabled = v.trim().eq_ignore_ascii_case("true") || v.trim() == "1";
         }
 
+        if let Ok(v) = std::env::var("TYPESAFE_ENABLED") {
+            settings.typesafe.enabled = v.trim().eq_ignore_ascii_case("true") || v.trim() == "1";
+        }
+        if let Ok(v) = std::env::var("TYPESAFE_API_KEY") {
+            if !v.trim().is_empty() { settings.typesafe.api_key = v.trim().to_string(); }
+        }
+        if let Ok(v) = std::env::var("TYPESAFE_MODEL") {
+            if !v.trim().is_empty() { settings.typesafe.model = v.trim().to_string(); }
+        }
+        if let Ok(v) = std::env::var("TYPESAFE_BASE_URL") {
+            if !v.trim().is_empty() { settings.typesafe.base_url = v.trim().to_string(); }
+        }
+        if let Ok(v) = std::env::var("TYPESAFE_MIN_CONFIDENCE") {
+            if let Ok(num) = v.trim().parse::<f64>() { settings.typesafe.min_confidence = num.clamp(0.0, 1.0); }
+        }
+        if let Ok(v) = std::env::var("TYPESAFE_MIN_NOUL") {
+            if let Ok(num) = v.trim().parse::<f64>() { settings.typesafe.min_noul_threshold = num.clamp(0.0, 1.0); }
+        }
+        if let Ok(v) = std::env::var("TYPESAFE_TIMEOUT_SECONDS") {
+            if let Ok(num) = v.trim().parse::<u64>() { settings.typesafe.timeout_seconds = num.max(5); }
+        }
+        if let Ok(v) = std::env::var("TYPESAFE_FAIL_CLOSED") {
+            settings.typesafe.fail_closed = matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes");
+        }
+
         settings
     }
 
@@ -493,9 +564,17 @@ impl Settings {
         !self.provider.api_key.trim().is_empty()
     }
 
+    pub fn is_typesafe_configured(&self) -> bool {
+        settings_is_typesafe_configured(&self.typesafe)
+    }
+
     pub fn is_okx_configured(&self) -> bool {
         !self.okx.api_key.trim().is_empty()
             && !self.okx.secret_key.trim().is_empty()
             && !self.okx.passphrase.trim().is_empty()
     }
+}
+
+fn settings_is_typesafe_configured(ts: &TypeSafeSettings) -> bool {
+    ts.enabled && !ts.api_key.trim().is_empty()
 }

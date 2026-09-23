@@ -76,11 +76,11 @@ async fn test_decision_cache_fingerprint_and_persistence() {
 
     let frame = build_analysis_frame(&bars_desc, 50, "BTC-USDT-SWAP", "15m", None).unwrap();
 
-    let fp1 = DecisionCache::compute_fingerprint("2pa_trend", &frame, None);
-    let fp2 = DecisionCache::compute_fingerprint("2pa_trend", &frame, None);
+    let fp1 = DecisionCache::compute_fingerprint("2pa_trend", &frame, None, None);
+    let fp2 = DecisionCache::compute_fingerprint("2pa_trend", &frame, None, None);
     assert_eq!(fp1, fp2, "Identical frame states must produce identical fingerprints");
 
-    let fp_dog = DecisionCache::compute_fingerprint("dog_reversion", &frame, None);
+    let fp_dog = DecisionCache::compute_fingerprint("dog_reversion", &frame, None, None);
     assert_ne!(fp1, fp_dog, "Different strategies must produce different fingerprints");
 
     // Insert cached decision

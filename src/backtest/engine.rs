@@ -22,7 +22,18 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+use crate::ai::client::ChatMessage;
+use crate::ai::prompt_assembler::{
+    build_source_2pa_stage1_messages, build_source_2pa_stage2_user_prompt, build_source_2pa_system_prompt,
+    build_stage1_prompt_for_system, build_stage2_prompt_for_system,
+};
+use crate::ai::typesafe::TypeSafeClient;
+use crate::orchestrator::validation_retry::{
+    call_and_validate_stage1, call_and_validate_stage1_messages,
+    call_and_validate_stage2, call_and_validate_stage2_messages,
+};
 
 pub type ProgressCallback = Arc<dyn Fn(BacktestJobStatus) + Send + Sync>;
 
@@ -30,6 +41,7 @@ pub struct BacktestEngine {
     pub config: BacktestConfig,
     pub cache: DecisionCache,
     pub ai_client: Option<Arc<AIClient>>,
+    pub typesafe_client: Option<Arc<TypeSafeClient>>,
     pub cancel_flag: Arc<AtomicBool>,
 }
 
@@ -43,8 +55,14 @@ impl BacktestEngine {
             config,
             cache,
             ai_client,
+            typesafe_client: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn with_typesafe_client(mut self, client: Arc<TypeSafeClient>) -> Self {
+        self.typesafe_client = Some(client);
+        self
     }
 
     /// Resample LTF ascending bars into closed HTF ascending bars with ZERO lookahead bias.
@@ -287,11 +305,19 @@ impl BacktestEngine {
                     if !long_eligible && !short_eligible {
                         gated_bars_skipped += 1;
                     } else {
-                        // Diagnostic gate passed! Setup candidate detected.
+                        let eval_mode = if self.config.use_typesafe {
+                            "typesafe"
+                        } else if self.ai_client.is_some() && self.config.allow_llm_calls {
+                            "llm"
+                        } else {
+                            "program"
+                        };
+
                         let fingerprint = DecisionCache::compute_fingerprint(
                             &self.config.strategy_id,
                             &frame,
                             htf_frame_opt.as_ref(),
+                            Some(eval_mode),
                         );
 
                         let cached_opt = if self.config.use_cache {
@@ -531,6 +557,152 @@ impl BacktestEngine {
         diag: &serde_json::Value,
         long_eligible: bool,
     ) -> serde_json::Value {
+        if self.config.allow_llm_calls {
+            if let Some(client) = &self.ai_client {
+                let is_2pa_source = crate::strategies::canonical(&self.config.strategy_id) == Some("2pa_source");
+
+                let stage1_res = if is_2pa_source {
+                    let s1_msgs = build_source_2pa_stage1_messages(frame, None, None);
+                    call_and_validate_stage1_messages(client, s1_msgs, 1).await
+                } else {
+                    let s1_prompt = build_stage1_prompt_for_system(&self.config.strategy_id, frame, None, None);
+                    call_and_validate_stage1(client, &s1_prompt, 1).await
+                };
+
+                match stage1_res {
+                    Ok((stage1_diag, _s1_reply, _s1_msgs)) => {
+                        let gate_result = stage1_diag.get("gate_result").and_then(|v| v.as_str()).unwrap_or("wait");
+                        if gate_result != "proceed" {
+                            let reason = stage1_diag.get("dominant_force")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("未达阶段一入场标准");
+                            return json!({
+                                "terminal": { "outcome": "wait" },
+                                "decision": {
+                                    "action": "WAIT",
+                                    "order_type": "不下单",
+                                    "order_direction": null,
+                                    "entry_price": null,
+                                    "stop_loss_price": null,
+                                    "take_profit_price": null,
+                                    "take_profit_price_2": null,
+                                    "trade_confidence": 0,
+                                    "typesafe_confidence": null,
+                                    "typesafe_setup_noul": null,
+                                    "estimated_win_rate": null,
+                                    "risk_reward_ratio": 0.0,
+                                    "traders_equation_passes": false,
+                                    "reasoning": format!("阶段一市场诊断结果为观望 ({})", reason),
+                                    "strategy_id": self.config.strategy_id,
+                                    "strategy_version": crate::strategies::VERSION
+                                }
+                            });
+                        }
+
+                        // Gate passed: proceed to Stage 2
+                        let stage2_res = if is_2pa_source {
+                            let (s2_user, _files, _exp) = build_source_2pa_stage2_user_prompt(
+                                frame,
+                                &stage1_diag,
+                                "balanced",
+                                false,
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
+                            let s2_msgs = vec![
+                                ChatMessage {
+                                    role: "system".to_string(),
+                                    content: build_source_2pa_system_prompt(None),
+                                },
+                                ChatMessage {
+                                    role: "user".to_string(),
+                                    content: s2_user,
+                                },
+                            ];
+                            call_and_validate_stage2_messages(client, s2_msgs, 1, Some(&stage1_diag)).await
+                        } else {
+                            let (s2_prompt, _files, _exp) = build_stage2_prompt_for_system(
+                                &self.config.strategy_id,
+                                frame,
+                                &stage1_diag,
+                                "balanced",
+                                false,
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
+                            call_and_validate_stage2(client, &s2_prompt, 1, Some(&stage1_diag)).await
+                        };
+
+                        match stage2_res {
+                            Ok((mut stage2_decision, _s2_reply, _s2_msgs)) => {
+                                crate::strategies::enforce(
+                                    &self.config.strategy_id,
+                                    frame,
+                                    _htf_frame,
+                                    &stage1_diag,
+                                    &mut stage2_decision,
+                                    None,
+                                );
+                                return stage2_decision;
+                            }
+                            Err(e) => {
+                                warn!("Backtest Stage 2 LLM decision failed: {}", e);
+                                return json!({
+                                    "terminal": { "outcome": "wait" },
+                                    "decision": {
+                                        "action": "WAIT",
+                                        "order_type": "不下单",
+                                        "order_direction": null,
+                                        "entry_price": null,
+                                        "stop_loss_price": null,
+                                        "take_profit_price": null,
+                                        "take_profit_price_2": null,
+                                        "trade_confidence": 0,
+                                        "typesafe_confidence": null,
+                                        "typesafe_setup_noul": null,
+                                        "estimated_win_rate": null,
+                                        "risk_reward_ratio": 0.0,
+                                        "traders_equation_passes": false,
+                                        "reasoning": format!("阶段二决策异常自动转观望: {}", e),
+                                        "strategy_id": self.config.strategy_id,
+                                        "strategy_version": crate::strategies::VERSION
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Backtest Stage 1 LLM diagnosis failed: {}", e);
+                        return json!({
+                            "terminal": { "outcome": "wait" },
+                            "decision": {
+                                "action": "WAIT",
+                                "order_type": "不下单",
+                                "order_direction": null,
+                                "entry_price": null,
+                                "stop_loss_price": null,
+                                "take_profit_price": null,
+                                "take_profit_price_2": null,
+                                "trade_confidence": 0,
+                                "typesafe_confidence": null,
+                                "typesafe_setup_noul": null,
+                                "estimated_win_rate": null,
+                                "risk_reward_ratio": 0.0,
+                                "traders_equation_passes": false,
+                                "reasoning": format!("阶段一分析异常自动转观望: {}", e),
+                                "strategy_id": self.config.strategy_id,
+                                "strategy_version": crate::strategies::VERSION
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
         let (dir_str, evidence_val) = if long_eligible {
             ("做多", &diag["long"]["evidence"])
         } else {
@@ -570,6 +742,70 @@ impl BacktestEngine {
 
         let actual_rr = ((tp - ref_close).abs()) / stop_distance.max(1e-6);
 
+        let mut trade_conf = 85u32;
+        let mut typesafe_conf_val = None;
+        let mut typesafe_noul_val = None;
+
+        if self.config.use_typesafe {
+            if let Some(client) = &self.typesafe_client {
+                let state = serde_json::json!({
+                    "strategy": self.config.strategy_id,
+                    "direction": dir_str,
+                    "reference_close": ref_close,
+                    "atr": atr,
+                    "evidence": evidence_val,
+                });
+                let mut questions = std::collections::HashMap::new();
+                questions.insert(
+                    "setup_valid".to_string(),
+                    crate::ai::typesafe::TypeSafeQuestion::noul(format!(
+                        "Does current price action confirm a high-conviction {} entry for {}?",
+                        dir_str, self.config.strategy_id
+                    )),
+                );
+                let mut regime_opts = std::collections::HashMap::new();
+                regime_opts.insert("bull_trend".to_string(), "Bullish trend".to_string());
+                regime_opts.insert("bear_trend".to_string(), "Bearish trend".to_string());
+                regime_opts.insert("range_chop".to_string(), "Choppy range".to_string());
+                questions.insert(
+                    "regime".to_string(),
+                    crate::ai::typesafe::TypeSafeQuestion::choice("Current trend regime", regime_opts),
+                );
+
+                if let Ok(resp) = client.evaluate(&state, &questions).await {
+                    let setup_noul = resp.answers.get("setup_valid").and_then(|a| a.noul).unwrap_or(0.0);
+                    let confidence = resp.answers.get("regime").map(|a| a.effective_confidence()).unwrap_or(0.5);
+                    typesafe_conf_val = Some(confidence);
+                    typesafe_noul_val = Some(setup_noul);
+                    trade_conf = (confidence * 100.0) as u32;
+
+                    if setup_noul < 0.65 || confidence < 0.70 {
+                        return json!({
+                            "terminal": { "outcome": "wait" },
+                            "decision": {
+                                "action": "WAIT",
+                                "order_type": "不下单",
+                                "order_direction": null,
+                                "entry_price": null,
+                                "stop_loss_price": null,
+                                "take_profit_price": null,
+                                "take_profit_price_2": null,
+                                "trade_confidence": trade_conf,
+                                "typesafe_confidence": confidence,
+                                "typesafe_setup_noul": setup_noul,
+                                "estimated_win_rate": null,
+                                "risk_reward_ratio": 0.0,
+                                "traders_equation_passes": false,
+                                "reasoning": format!("TypeSafe 置信度 ({:.2}) 或有效性 ({:.2}) 未达入场门槛，自动观望", confidence, setup_noul),
+                                "strategy_id": self.config.strategy_id,
+                                "strategy_version": crate::strategies::VERSION
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
         json!({
             "terminal": { "outcome": "proceed" },
             "decision": {
@@ -580,11 +816,17 @@ impl BacktestEngine {
                 "stop_loss_price": sl,
                 "take_profit_price": tp,
                 "take_profit_price_2": null,
-                "trade_confidence": 85,
+                "trade_confidence": trade_conf,
+                "typesafe_confidence": typesafe_conf_val,
+                "typesafe_setup_noul": typesafe_noul_val,
                 "estimated_win_rate": null,
                 "risk_reward_ratio": actual_rr,
                 "traders_equation_passes": true,
-                "reasoning": format!("基于 {} 诊断候选放行，触发展开结构位", dir_str),
+                "reasoning": if typesafe_conf_val.is_some() {
+                    format!("TypeSafe 置信度 ({:.2}) 确认放行，触发展开结构位", typesafe_conf_val.unwrap_or(0.0))
+                } else {
+                    format!("基于 {} 诊断候选放行，触发展开结构位", dir_str)
+                },
                 "strategy_id": self.config.strategy_id,
                 "strategy_version": crate::strategies::VERSION
             }

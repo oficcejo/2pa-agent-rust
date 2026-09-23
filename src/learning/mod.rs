@@ -42,6 +42,7 @@ pub use experience_writer::ExperienceWriter;
 pub use hooks::{
     DailyDrawdownGuardHook, HookAction, HookPipeline, HookRejection, PostOutcomeContext,
     PreAnalysisContext, PreExecutionContext, ShadowPosition, ShadowTradingHook, TradingHook,
+    TypeSafeConfidenceGuardHook,
 };
 pub use reflector::{FailureAttribution, Proposal, Proposer, StrategyReflector};
 pub use replay_evaluator::ReplayEvaluator;

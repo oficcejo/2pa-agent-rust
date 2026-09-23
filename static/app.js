@@ -484,6 +484,8 @@ async function loadCandles() {
     candles = await api(`/api/candles?inst_id=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=300`);
     if ($("symbol").value.trim().toUpperCase() !== symbol || $("timeframe").value !== timeframe) return;
     candles.sort((a, b) => a.ts_open - b.ts_open);
+    const viewKey = `${symbol}|${timeframe}`;
+    if (chartView.symbolKey !== viewKey) resetChartView(symbol, timeframe);
     const last = candles.at(-1);
     if (last) {
       $("lastPrice").textContent = fmt(last.close);
@@ -519,6 +521,124 @@ function updateSystemUI() {
   }
 }
 
+// ---- K 线视口：拖动平移 / 滚轮缩放 / 十字光标 ----
+const chartView = {
+  visibleCount: 120,
+  endOffset: 0,
+  hover: null,
+  dragging: false,
+  dragStartX: 0,
+  dragStartEndOffset: 0,
+  symbolKey: "",
+};
+
+function clampChartEndOffset(value) {
+  const total = candles.length;
+  const maxOffset = Math.max(0, total - 15);
+  return Math.min(maxOffset, Math.max(0, Math.round(value)));
+}
+
+function resetChartView(symbol, timeframe) {
+  chartView.symbolKey = `${symbol}|${timeframe}`;
+  chartView.visibleCount = 120;
+  chartView.endOffset = 0;
+  chartView.hover = null;
+}
+
+function formatChartTime(ts) {
+  const date = new Date(Number(ts));
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function setupChartInteraction() {
+  const wrap = $("chart");
+  const canvas = $("chartCanvas");
+  if (!wrap || !canvas || wrap.dataset.bound === "1") return;
+  wrap.dataset.bound = "1";
+  wrap.style.cursor = "crosshair";
+
+  wrap.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    chartView.dragging = true;
+    chartView.dragStartX = event.clientX;
+    chartView.dragStartEndOffset = chartView.endOffset;
+    wrap.style.cursor = "grabbing";
+    event.preventDefault();
+  });
+
+  window.addEventListener("mousemove", (event) => {
+    const rect = wrap.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const inside = x >= 0 && y >= 0 && x <= rect.width && y <= rect.height;
+
+    if (chartView.dragging) {
+      const padding = { left: 12, right: 68 };
+      const plotWidth = Math.max(1, rect.width - padding.left - padding.right);
+      const barWidth = plotWidth / chartView.visibleCount;
+      const bars = (event.clientX - chartView.dragStartX) / barWidth;
+      chartView.endOffset = clampChartEndOffset(chartView.dragStartEndOffset + bars);
+      drawChart();
+      return;
+    }
+
+    if (inside) {
+      chartView.hover = { x, y };
+      drawChart();
+    } else if (chartView.hover) {
+      chartView.hover = null;
+      drawChart();
+    }
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (!chartView.dragging) return;
+    chartView.dragging = false;
+    wrap.style.cursor = "crosshair";
+  });
+
+  wrap.addEventListener("mouseleave", () => {
+    chartView.hover = null;
+    if (!chartView.dragging) drawChart();
+  });
+
+  wrap.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    if (!candles.length) return;
+    const rect = wrap.getBoundingClientRect();
+    const padding = { left: 12, right: 68, top: 32, bottom: 26 };
+    const plotWidth = Math.max(1, rect.width - padding.left - padding.right);
+    const oldCount = chartView.visibleCount;
+    const factor = event.deltaY > 0 ? 1.12 : 0.89;
+    let newCount = Math.round(oldCount * factor);
+    newCount = Math.min(320, Math.max(20, newCount));
+    if (newCount === oldCount) return;
+
+    const total = candles.length;
+    const oldEnd = total - chartView.endOffset;
+    const oldStart = oldEnd - oldCount;
+    const mouseX = event.clientX - rect.left;
+    const absIndex = oldStart + ((mouseX - padding.left) / plotWidth) * oldCount;
+    const newBar = plotWidth / newCount;
+    const newStart = absIndex - (mouseX - padding.left) / newBar;
+    const newEnd = newStart + newCount;
+    chartView.visibleCount = newCount;
+    chartView.endOffset = clampChartEndOffset(total - newEnd);
+    drawChart();
+  }, { passive: false });
+
+  wrap.addEventListener("dblclick", () => {
+    chartView.visibleCount = 120;
+    chartView.endOffset = 0;
+    drawChart();
+  });
+}
+
 function drawChart() {
   const canvas = $("chartCanvas");
   const wrap = $("chart");
@@ -540,12 +660,15 @@ function drawChart() {
   const sma170All = computeSMA(candles, 170);
   const ema20All = computeEMA(candles, 20);
 
-  const displayCount = 120;
-  const startIndex = Math.max(0, candles.length - displayCount);
-  const data = candles.slice(startIndex);
-  const sma14 = sma14All.slice(startIndex);
-  const sma170 = sma170All.slice(startIndex);
-  const ema20 = ema20All.slice(startIndex);
+  const total = candles.length;
+  chartView.visibleCount = Math.min(chartView.visibleCount, Math.max(20, total));
+  chartView.endOffset = clampChartEndOffset(chartView.endOffset);
+  const endIndex = total - chartView.endOffset;
+  const startIndex = Math.max(0, endIndex - chartView.visibleCount);
+  const data = candles.slice(startIndex, endIndex);
+  const sma14 = sma14All.slice(startIndex, endIndex);
+  const sma170 = sma170All.slice(startIndex, endIndex);
+  const ema20 = ema20All.slice(startIndex, endIndex);
 
   let high = Math.max(...data.map((item) => item.high));
   let low = Math.min(...data.map((item) => item.low));
@@ -672,6 +795,71 @@ function drawChart() {
       context.fillStyle = "#22d3ee";
       context.fillText(fmt(lastEma), padding.left + 155, 18);
     }
+  }
+
+  // Time axis labels
+  const labelStep = Math.max(1, Math.ceil(data.length / 6));
+  context.fillStyle = "#7c878a";
+  context.font = "11px Segoe UI";
+  context.textAlign = "center";
+  for (let i = 0; i < data.length; i += labelStep) {
+    context.fillText(formatChartTime(data[i].ts_open), x(i), height - 8);
+  }
+  context.textAlign = "left";
+
+  // Crosshair + OHLC tooltip
+  const hover = chartView.hover;
+  if (hover && data.length) {
+    const plotLeft = padding.left;
+    const plotRight = width - padding.right;
+    const plotTop = padding.top;
+    const plotBottom = height - padding.bottom;
+    const clampedX = Math.min(plotRight, Math.max(plotLeft, hover.x));
+    const clampedY = Math.min(plotBottom, Math.max(plotTop, hover.y));
+    const idx = Math.min(data.length - 1, Math.max(0, Math.floor((clampedX - plotLeft) / plotWidth * data.length)));
+    const bar = data[idx];
+    const cx = x(idx);
+    const cy = clampedY;
+    const price = high - ((cy - plotTop) / plotHeight) * range;
+
+    context.save();
+    context.strokeStyle = "rgba(137,147,151,0.55)";
+    context.lineWidth = 1;
+    context.setLineDash([4, 4]);
+    context.beginPath();
+    context.moveTo(cx, plotTop);
+    context.lineTo(cx, plotBottom);
+    context.moveTo(plotLeft, cy);
+    context.lineTo(plotRight, cy);
+    context.stroke();
+    context.setLineDash([]);
+    context.restore();
+
+    context.fillStyle = "#2a3236";
+    context.fillRect(width - padding.right + 2, cy - 9, padding.right - 4, 18);
+    context.fillStyle = "#edf1f2";
+    context.font = "11px Segoe UI";
+    context.fillText(fmt(price), width - padding.right + 6, cy + 4);
+
+    context.fillStyle = "#2a3236";
+    context.fillRect(cx - 52, height - padding.bottom + 2, 104, 16);
+    context.fillStyle = "#edf1f2";
+    context.textAlign = "center";
+    context.fillText(formatChartTime(bar.ts_open), cx, height - padding.bottom + 13);
+    context.textAlign = "left";
+
+    const isUp = bar.close >= bar.open;
+    const ohlc = `${formatChartTime(bar.ts_open)}  开 ${fmt(bar.open, 2)}  高 ${fmt(bar.high, 2)}  低 ${fmt(bar.low, 2)}  收 ${fmt(bar.close, 2)}  量 ${fmt(bar.volume, 2)}`;
+    context.font = "12px Segoe UI";
+    const textWidth = context.measureText(ohlc).width;
+    context.fillStyle = "rgba(14,17,18,0.88)";
+    context.fillRect(padding.left + 4, 24, textWidth + 12, 20);
+    context.fillStyle = isUp ? "#1fc48d" : "#f05b67";
+    context.fillText(ohlc, padding.left + 10, 38);
+  } else if (data.length) {
+    context.fillStyle = "#5c666a";
+    context.font = "11px Segoe UI";
+    context.fillText("拖动平移 · 滚轮缩放 · 双击复位", padding.left + 4, height - 8);
   }
 }
 
@@ -1671,6 +1859,7 @@ $("tradingSystemSelect").addEventListener("change", async (e) => {
   }
 });
 $("automationSwitch").addEventListener("change", toggleAutomation);
+setupChartInteraction();
 window.addEventListener("resize", () => {
   drawChart();
   if (!$("accountDashboard").hidden) drawEquityChart();

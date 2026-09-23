@@ -49,6 +49,7 @@ config/exception_state.json
 tmp/
 temp/
 .tmp/
+.playwright-cli/
 *.tmp
 *.bak
 *.swp

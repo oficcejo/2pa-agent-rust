@@ -5,6 +5,7 @@ pub mod pattern_routing;
 pub mod prompt_assembler;
 pub mod prompts;
 pub mod retry_feedback;
+pub mod typesafe;
 
 pub use client::*;
 pub use decision_stance::*;
@@ -13,3 +14,4 @@ pub use pattern_routing::*;
 pub use prompt_assembler::*;
 pub use prompts::*;
 pub use retry_feedback::*;
+pub use typesafe::*;
