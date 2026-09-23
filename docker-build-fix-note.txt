@@ -1,8 +1,0 @@
-﻿# Docker build fix for okx-2pa-agent v0.7.0
-# Root cause: .dockerignore excluded all of records/, but src/records/benchmark.rs uses
-# include_str! on records/benchmark_episodes/*.json at compile time.
-#
-# Fixed by:
-# 1) .dockerignore: records/** with exception !records/benchmark_episodes/**
-# 2) Dockerfile: COPY records/benchmark_episodes ./records/benchmark_episodes
-# 3) docker-compose.yml: pull_policy: build so compose builds locally first
