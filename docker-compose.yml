@@ -14,9 +14,9 @@ services:
       - TZ=Asia/Shanghai
       - RUST_LOG=info
     volumes:
-      # 配置文件与环境变量持久化
+      # Config and env persistence
       - ./.env:/app/.env
       - ./config:/app/config
-      # 交易审计记录与历史决策持久化
-      # benchmark_episodes 已内嵌进二进制，运行时可继续从挂载目录加载/追加
+      # Audit records and decision history persistence
+      # benchmark_episodes are already embedded in the binary; volume can still load/append
       - ./records:/app/records
