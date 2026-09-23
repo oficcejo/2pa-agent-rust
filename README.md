@@ -1,13 +1,13 @@
 # OKX 2PA Agent
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Release](https://img.shields.io/badge/Release-v0.6.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.6.0)
+[![Release](https://img.shields.io/badge/Release-v0.7.0-blue.svg)](https://github.com/oficcejo/2pa-agent-rust/releases/tag/v0.7.0)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![OKX 邀请注册](https://img.shields.io/badge/OKX-邀请注册-black.svg)](https://www.topzhjdgxcb.com/join/6746503)
 
 基于 Rust、Axum 和 Tokio 的 OKX 交易研究与执行工具，支持 LLM 两阶段分析、Web 控制台、自动交易时段，以及默认关闭的自进化闭环。模型负责解释和提出方案，程序根据已收盘行情、结构、成本和账户额度决定是否允许执行。
 
-当前版本 **v0.6.0**，策略协议 **2026-09-v1**。规则阈值是研究基线，测试通过不代表策略已经实现盈利。
+当前版本 **v0.7.0**，策略协议 **2026-09-v1**。规则阈值是研究基线，测试通过不代表策略已经实现盈利。
 
 ## 自进化
 
@@ -19,6 +19,15 @@
 - **有边界** —— 不训练权重、不自动热切换上线、不把估算盈亏当成对账数据。
 
 配置项、资格判定与操作步骤见下文《自进化（持续学习闭环）》。
+
+## v0.7.0 更新与升级说明
+
+- 新增 **TypeSafe System One 置信度门控**（默认关闭）：毫秒级市场状态结构化诊断（regime / confidence / Noul / bar quality），低于阈值自动观望；`TYPESAFE_FAIL_CLOSED=true` 时评估失败不回落主 LLM，直接 WAIT。
+- 扩展 **2PA Source 两阶段提示词管线**：阶段二按诊断结果路由策略文件，补齐 stage1/stage2 message 装配与测试。
+- 强化 **回测引擎与策略校验**：ETH 1000 根基准套件、入场障碍与高周期趋势过滤、TypeSafe 客户端接入回测门控。
+- Web 控制台 **K 线交互升级**：拖动平移、滚轮缩放、双击复位、十字光标与 OHLC 提示；右侧 Tab 改为 3×2 粘性网格，标签不再截断。
+
+**升级要点**：`TYPESAFE_ENABLED` 默认 `false`，行为与 v0.6.0 主路径一致。启用前在 `.env` 配置 `TYPESAFE_*`；生产建议保持 `TYPESAFE_FAIL_CLOSED=true`，避免门控故障静默放行开仓。
 
 ## v0.5.0 更新与升级说明
 
