@@ -9,6 +9,28 @@ pub const VERSION: &str = "2026-09-v1";
 pub const MIN_NET_RR: f64 = 1.5;
 pub const SLIPPAGE_PER_SIDE: f64 = 0.0002;
 
+/// Single source of truth for the cost model. Every fee/sizing gate in the
+/// executor and the learning reconciler derives its rate from these so the
+/// trader's equation, position sizing and the round-trip-fee guard can never
+/// drift apart. Funding is deliberately excluded (it is time-based, not
+/// per-fill) and treated as a separate conservative buffer at decision time.
+pub const TAKER_FEE_DERIVATIVE: f64 = 0.0005;
+pub const TAKER_FEE_SPOT: f64 = 0.0010;
+
+pub fn is_derivative(symbol: &str) -> bool {
+    symbol.ends_with("-SWAP") || symbol.split('-').count() >= 4
+}
+
+/// One-side taker fee, excluding slippage.
+pub fn taker_fee_rate(symbol: &str) -> f64 {
+    if is_derivative(symbol) { TAKER_FEE_DERIVATIVE } else { TAKER_FEE_SPOT }
+}
+
+/// Cost of a single side: taker fee plus slippage reserve.
+pub fn cost_rate(symbol: &str) -> f64 {
+    taker_fee_rate(symbol) + SLIPPAGE_PER_SIDE
+}
+
 pub fn canonical(id: &str) -> Option<&'static str> {
     match id.trim().to_lowercase().as_str() {
         "2pa_source" | "2pa_original" => Some("2pa_source"),
@@ -20,16 +42,18 @@ pub fn canonical(id: &str) -> Option<&'static str> {
     }
 }
 
-pub fn cost_rate(symbol: &str) -> f64 {
-    let derivative = symbol.ends_with("-SWAP") || symbol.split('-').count() >= 4;
-    (if derivative { 0.0005 } else { 0.001 }) + SLIPPAGE_PER_SIDE
-}
-
 /// Cost includes entry and exit notional; use separate stop/target exit prices.
 pub fn net_rr(symbol: &str, entry: f64, stop: f64, target: f64) -> f64 {
     let rate = cost_rate(symbol);
     ((target - entry).abs() - (entry + target) * rate)
         / ((entry - stop).abs() + (entry + stop) * rate)
+}
+
+/// Round-trip cost (entry + exit) applied to a single-side notional, expressed
+/// as a fraction. Both legs pay a per-side cost, so the notional is charged
+/// twice. Used by the executor's fee guard so it matches `net_rr` exactly.
+pub fn round_trip_cost_fraction(symbol: &str) -> f64 {
+    cost_rate(symbol) * 2.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

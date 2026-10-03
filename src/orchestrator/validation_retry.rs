@@ -42,7 +42,12 @@ pub async fn call_and_validate_stage1_messages(
                         return Ok((validated, reply, messages));
                     }
                     Err(e) => {
-                        warn!("Stage 1 validation failed: {}", e.message);
+                        warn!(
+                            "Stage 1 validation failed: {} | missing={:?} invalid={:?}",
+                            e.message,
+                            e.missing_fields,
+                            e.invalid_fields
+                        );
                         last_err = Some(e);
                     }
                 }

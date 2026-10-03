@@ -18,6 +18,7 @@ const TOKEN: &str = "test-token-abcdefghijklmnopqrst";
 fn app() -> axum::Router {
     let settings = Settings {
         web_auth_token: TOKEN.to_string(),
+        web_auth_enabled: true,
         ..Default::default()
     };
     create_router(Arc::new(WebTradingService::new(settings)))

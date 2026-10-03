@@ -24,6 +24,7 @@ const TEST_TOKEN: &str = "test-token-backtest-suite";
 fn test_app() -> axum::Router {
     let settings = Settings {
         web_auth_token: TEST_TOKEN.to_string(),
+        web_auth_enabled: true,
         ..Default::default()
     };
     create_router(Arc::new(WebTradingService::new(settings)))

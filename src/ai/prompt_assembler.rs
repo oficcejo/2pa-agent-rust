@@ -766,7 +766,7 @@ pub fn build_stage2_prompt_with_strategy(
     let indicators_section = render_indicators_for_system(req.system, req.frame);
 
     let prompt = format!(
-        "{}\n{}\n策略：{}\n{}\n阶段一：{}\n持仓：{}\n{}\n{}\n{}\n阶段二：仅输出交易决策 JSON。",
+        "{}\n{}\n策略：{}\n{}\n阶段一：{}\n持仓：{}\n{}\n{}\n{}\n\n{}\n\n{}\n\n{}",
         LANGUAGE_ZH_RULE,
         req.strategy_prompt,
         crate::strategies::canonical(req.system).unwrap_or("unknown"),
@@ -775,7 +775,10 @@ pub fn build_stage2_prompt_with_strategy(
         serde_json::to_string(&req.position_context).unwrap_or_default(),
         indicators_section,
         req.htf_context.unwrap_or("高周期数据缺失"),
-        experience_section
+        experience_section,
+        STAGE2_API_TASK_RULE,
+        STAGE2_OUTPUT_CONTRACT,
+        STAGE2_TAIL_REMINDER
     );
 
     let mut files_used = vec!["strategy_v1.txt".to_string()];

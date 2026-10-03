@@ -36,6 +36,78 @@ fn test_stage1_validation() {
 }
 
 #[test]
+fn test_stage1_alias_and_nested_recovery() {
+    let camel = serde_json::json!({
+        "cyclePosition": "trading_range",
+        "dominantForce": "neutral",
+        "gateResult": "wait",
+    });
+    assert!(validate_stage1_json(&camel, "").is_ok());
+
+    let nested = serde_json::json!({
+        "diagnosis": {
+            "cycle_position": "hugging_owner",
+            "dominant_force": "bears",
+            "gate_result": "wait",
+        }
+    });
+    assert!(validate_stage1_json(&nested, "").is_ok());
+
+    // Real-world shape seen in production logs after deploy:
+    // cycle_position/gate_result nested under diagnosis/phase1_gate.
+    let deep = serde_json::json!({
+        "symbol": "ETH-USDT-SWAP",
+        "dominant_force": "neutral",
+        "diagnosis": {
+            "cycle_position": "trading_range",
+        },
+        "phase1_gate": {
+            "gate_result": "wait",
+        },
+    });
+    assert!(validate_stage1_json(&deep, "").is_ok());
+
+    // Production shape from 2026-10-03 server logs.
+    let prod = serde_json::json!({
+        "dominant_force": {"description": "neutral", "direction": "none"},
+        "phase": "range",
+        "market_diagnosis": {
+            "cycle_pattern": "trading_range",
+            "detected_pattern": [],
+            "dominant_force": "neutral",
+            "key_levels": {},
+            "phase1_gate": {"result": "wait"},
+        },
+    });
+    assert!(validate_stage1_json(&prod, "").is_ok());
+
+    // Chinese-keyed shape from production logs.
+    let zh = serde_json::json!({
+        "cycle_position": "trading_range",
+        "阶段一_市场诊断": {
+            "周期形态": "trading_range",
+            "主导力量": "neutral",
+            "主导力量描述": "买卖平衡",
+            "阶段一_闸门结果": "wait",
+            "阶段一_闸门说明": "偏离不足",
+        },
+    });
+    assert!(validate_stage1_json(&zh, "").is_ok());
+
+    // Another production variant: period_shape + phase_1_gate.result
+    let v2 = serde_json::json!({
+        "dominant_force": "neutral",
+        "market_diagnosis": {
+            "period_shape": "trading_range",
+            "detected_patterns": [],
+            "dominant_force": "neutral",
+        },
+        "phase_1_gate": {"reasoning": "not enough deviation", "result": "wait"},
+    });
+    assert!(validate_stage1_json(&v2, "").is_ok());
+}
+
+#[test]
 fn test_stage2_validation() {
     let valid_stage2 = serde_json::json!({
         "decision": {

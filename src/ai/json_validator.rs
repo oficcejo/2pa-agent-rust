@@ -162,11 +162,84 @@ pub fn parse_and_clean_json(text: &str, stage: &str) -> Result<Value, Validation
     }
 }
 
+fn find_alias_recursive(
+    node: &Value,
+    alts: &[&str],
+    depth: usize,
+    max_depth: usize,
+) -> Option<(String, Value)> {
+    if depth > max_depth {
+        return None;
+    }
+    match node {
+        Value::Object(map) => {
+            for alt in alts {
+                if let Some(v) = map.get(*alt) {
+                    return Some((alt.to_string(), v.clone()));
+                }
+            }
+            for v in map.values() {
+                if let Some(hit) = find_alias_recursive(v, alts, depth + 1, max_depth) {
+                    return Some(hit);
+                }
+            }
+            None
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                if let Some(hit) = find_alias_recursive(v, alts, depth + 1, max_depth) {
+                    return Some(hit);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn collect_stage1_keys(
+    node: &Value,
+    need: &[&str],
+    depth: usize,
+    max_depth: usize,
+    out: &mut Vec<(String, Value)>,
+) {
+    if depth > max_depth || out.len() >= need.len() {
+        return;
+    }
+    match node {
+        Value::Object(map) => {
+            for key in need {
+                if !out.iter().any(|(k, _)| k == key) {
+                    if let Some(v) = map.get(*key) {
+                        out.push((key.to_string(), v.clone()));
+                    }
+                }
+            }
+            for v in map.values() {
+                if out.len() >= need.len() {
+                    break;
+                }
+                collect_stage1_keys(v, need, depth + 1, max_depth, out);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                if out.len() >= need.len() {
+                    break;
+                }
+                collect_stage1_keys(v, need, depth + 1, max_depth, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn validate_stage1_json(val: &Value, raw_text: &str) -> Result<Value, ValidationError> {
     let mut missing: Vec<String> = Vec::new();
 
-    let obj = match val.as_object() {
-        Some(o) => o,
+    let mut obj_map = match val.as_object() {
+        Some(o) => o.clone(),
         None => {
             return Err(ValidationError {
                 category: "d".to_string(),
@@ -180,23 +253,213 @@ pub fn validate_stage1_json(val: &Value, raw_text: &str) -> Result<Value, Valida
         }
     };
 
-    if !obj.contains_key("cycle_position") { missing.push("cycle_position".to_string()); }
-    if !obj.contains_key("dominant_force") { missing.push("dominant_force".to_string()); }
-    if !obj.contains_key("gate_result") { missing.push("gate_result".to_string()); }
+    // Alias / camelCase recovery before failing the response.
+    let aliases: &[(&str, &[&str])] = &[
+        ("cycle_position", &["cyclePosition", "cycle", "cycle_pattern", "period_shape", "period", "market_state", "市场状态", "周期位置", "周期形态", "周期", "形态"]),
+        ("dominant_force", &["dominantForce", "dominant", "force", "主趋势", "优势方", "主导力量", "主导力量描述", "主导力量方向"]),
+        ("gate_result", &["gateResult", "gate", "gate_status", "闸门结果", "门控结果", "阶段一_闸门结果", "闸门判定", "门控"]),
+    ];
+
+    // Recover required keys from one nested wrapper level (common LLM shape).
+    for wrapper in [
+        "diagnosis",
+        "stage1",
+        "result",
+        "data",
+        "phase1_gate",
+        "phase",
+        "market_state",
+        "market_diagnosis",
+        "阶段一_市场诊断",
+        "阶段一_闸门",
+        "phase_1_gate",
+        "market_diagnosis.phase1_gate",
+        "market_diagnosis.phase_1_gate",
+        "analysis",
+    ] {
+        // Support "parent.child" wrappers by walking the path.
+        let inner_val: Option<Value> = if wrapper.contains('.') {
+            let mut cur: Option<&Value> = Some(&Value::Null);
+            // rebuild from obj_map each path segment
+            let mut node = Value::Object(obj_map.clone());
+            for seg in wrapper.split('.') {
+                node = match node.get(seg) {
+                    Some(v) => v.clone(),
+                    None => Value::Null,
+                };
+            }
+            if node.is_object() {
+                Some(node)
+            } else {
+                let _ = cur.take();
+                None
+            }
+        } else {
+            obj_map.get(wrapper).cloned()
+        };
+
+        let recovered: Vec<(String, Value)> = match inner_val.as_ref().and_then(|v| v.as_object()) {
+            Some(inner) => ["cycle_position", "dominant_force", "gate_result"]
+                .iter()
+                .filter(|key| !obj_map.contains_key(**key) && inner.contains_key(**key))
+                .map(|key| (key.to_string(), inner[*key].clone()))
+                .collect(),
+            None => Vec::new(),
+        };
+        for (k, v) in recovered {
+            obj_map.insert(k, v);
+        }
+    }
+
+    // phase1_gate / phase_1_gate often nests the gate verdict one level down.
+    if !obj_map.contains_key("gate_result") {
+        if let Some(pg) = obj_map
+            .get("market_diagnosis")
+            .and_then(|v| v.get("phase1_gate"))
+            .or_else(|| obj_map.get("phase1_gate"))
+            .or_else(|| obj_map.get("phase_1_gate"))
+        {
+            if let Some(g) = pg
+                .get("gate_result")
+                .or_else(|| pg.get("result"))
+                .or_else(|| pg.get("status"))
+            {
+                obj_map.insert("gate_result".to_string(), g.clone());
+            } else if let Some(g) = pg.as_str() {
+                obj_map.insert("gate_result".to_string(), Value::String(g.to_string()));
+            }
+        }
+    }
+
+    // Generic: any top-level key whose name contains "gate" may hold the verdict.
+    if !obj_map.contains_key("gate_result") {
+        for (k, v) in &obj_map {
+            if !k.to_lowercase().contains("gate") {
+                continue;
+            }
+            if let Some(g) = v
+                .get("gate_result")
+                .or_else(|| v.get("result"))
+                .or_else(|| v.get("status"))
+                .or_else(|| v.get("value"))
+            {
+                obj_map.insert("gate_result".to_string(), g.clone());
+                break;
+            } else if let Some(s) = v.as_str() {
+                let sl = s.to_ascii_lowercase();
+                if sl == "proceed" || sl == "wait" {
+                    obj_map.insert("gate_result".to_string(), Value::String(s.to_string()));
+                    break;
+                }
+            }
+        }
+    }
+
+    // market_diagnosis.cycle_pattern / period_shape is the Stage-1 cycle label.
+    if !obj_map.contains_key("cycle_position") {
+        if let Some(md) = obj_map.get("market_diagnosis") {
+            if let Some(cp) = md
+                .get("cycle_pattern")
+                .or_else(|| md.get("period_shape"))
+                .or_else(|| md.get("cycle"))
+                .or_else(|| md.get("period"))
+            {
+                obj_map.insert("cycle_position".to_string(), cp.clone());
+            }
+        }
+    }
+
+    // Depth-limited search: pick up keys nested one more level (e.g. diagnosis.cycle_position).
+    let need = ["cycle_position", "dominant_force", "gate_result"];
+    let missing_now: Vec<&str> = need
+        .iter()
+        .copied()
+        .filter(|k| !obj_map.contains_key(*k))
+        .collect();
+    if !missing_now.is_empty() {
+        let mut found: Vec<(String, Value)> = Vec::new();
+        collect_stage1_keys(&Value::Object(obj_map.clone()), &need, 0, 4, &mut found);
+        // Also look for alias names anywhere in the tree.
+        for (canonical, alts) in aliases {
+            if obj_map.contains_key(*canonical) {
+                continue;
+            }
+            if found.iter().any(|(k, _)| k == canonical) {
+                continue;
+            }
+            if let Some((_k, v)) = find_alias_recursive(&Value::Object(obj_map.clone()), alts, 0, 5) {
+                found.push((canonical.to_string(), v));
+            }
+        }
+        for (k, v) in found {
+            if !obj_map.contains_key(&k) {
+                obj_map.insert(k, v);
+            }
+        }
+    }
+
+    for (canonical, alts) in aliases {
+        if obj_map.contains_key(*canonical) {
+            continue;
+        }
+        for alt in *alts {
+            if let Some(v) = obj_map.get(*alt) {
+                obj_map.insert(canonical.to_string(), v.clone());
+                break;
+            }
+        }
+    }
+
+    if !obj_map.contains_key("cycle_position") {
+        missing.push("cycle_position".to_string());
+    }
+    if !obj_map.contains_key("dominant_force") {
+        missing.push("dominant_force".to_string());
+    }
+    if !obj_map.contains_key("gate_result") {
+        missing.push("gate_result".to_string());
+    }
 
     if !missing.is_empty() {
+        // Inventory nested objects so the next log line shows where fields actually live.
+        let mut nested_keys: Vec<String> = Vec::new();
+        for (k, v) in &obj_map {
+            if let Some(inner) = v.as_object() {
+                let ks: Vec<&str> = inner.keys().map(|s| s.as_str()).collect();
+                if !ks.is_empty() {
+                    nested_keys.push(format!("{}:{{{}}}", k, ks.join(",")));
+                }
+            }
+        }
         return Err(ValidationError {
             category: "b".to_string(),
             stage: "stage1".to_string(),
             raw_text: raw_text.to_string(),
             parse_position: None,
-            missing_fields: missing,
+            missing_fields: missing.clone(),
             invalid_fields: Vec::new(),
-            message: "Missing required fields in Stage 1".to_string(),
+            message: format!(
+                "Missing required fields in Stage 1: {} (present: {}; nested: {})",
+                missing.join(", "),
+                {
+                    let keys: Vec<&str> = obj_map.keys().map(|s| s.as_str()).collect();
+                    if keys.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        keys.join(",")
+                    }
+                },
+                if nested_keys.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    nested_keys.join(" | ")
+                }
+            ),
         });
     }
 
-    Ok(val.clone())
+    // Return a repaired object with recovered aliases applied.
+    Ok(Value::Object(obj_map))
 }
 
 pub fn validate_stage2_json_with_stage1(val: &Value, raw_text: &str, stage1: Option<&Value>) -> Result<Value, ValidationError> {

@@ -10,7 +10,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -257,15 +257,10 @@ impl OKXTradeExecutor {
         }
 
         let _guard = self.audit_lock.lock();
-        let file = match File::open(path) {
-            Ok(f) => f,
-            Err(_) => return Vec::new(),
-        };
-
-        let reader = BufReader::new(file);
+        let lines = read_audit_tail_lines(path, limit.saturating_add(64));
         let mut entries = Vec::new();
 
-        for line in reader.lines().flatten() {
+        for line in lines {
             if let Ok(item) = serde_json::from_str::<Value>(&line) {
                 if item.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) {
                     continue;
@@ -496,8 +491,10 @@ impl OKXTradeExecutor {
         let lev = if inst_type == "SPOT" { Decimal::ONE } else { self.default_leverage };
         anyhow::ensure!(lev > Decimal::ZERO, "杠杆必须为正数");
         let notional = ct_val * entry;
-        let fee_rate = if derivative { Decimal::new(7,4) } else { Decimal::new(12,4) };
-        // Include the same slippage reserve as the strategy's net reward gate.
+        // Per-side cost (taker fee + slippage) drawn from the single cost model,
+        // identical to the rate the trader's equation gates on.
+        let fee_rate = Decimal::from_f64_retain(crate::strategies::cost_rate(inst_id))
+            .unwrap_or_else(|| if derivative { Decimal::new(7, 4) } else { Decimal::new(12, 4) });
         let fees = ct_val * (entry + stop.max(entry)) * fee_rate;
         let margin_per_unit = notional / lev + fees;
         let risk_per_unit = (entry - stop).abs() * ct_val + fees;
@@ -606,12 +603,12 @@ impl OKXTradeExecutor {
             stop_dist * size
         };
 
-        let taker_fee_rate = if ["SWAP", "FUTURES"].contains(&inst_type) {
-            Decimal::from_str("0.0005").unwrap_or(Decimal::ZERO)
-        } else {
-            Decimal::from_str("0.0010").unwrap_or(Decimal::ZERO)
-        };
-        let est_roundtrip_fee = notional_usd * taker_fee_rate * Decimal::from(2);
+        // Round-trip cost mirrors the trader's equation: both legs pay the
+        // per-side taker+slippage cost, charged on the entry notional twice.
+        let round_trip_rate =
+            Decimal::from_f64_retain(crate::strategies::round_trip_cost_fraction(inst_id))
+                .unwrap_or(Decimal::ZERO);
+        let est_roundtrip_fee = notional_usd * round_trip_rate;
         let gross_reward = if ["SWAP", "FUTURES"].contains(&inst_type) { (target-entry).abs() * size * ct_val } else { (target-entry).abs() * size };
         anyhow::ensure!(gross_reward > est_roundtrip_fee, "止盈目标不足以覆盖预估往返手续费，拒绝开仓");
 
@@ -626,9 +623,11 @@ impl OKXTradeExecutor {
         let side = if direction == "做多" { "buy" } else { "sell" };
         let td_mode = if inst_type == "SPOT" && self.trade_mode == "cash" { "cash" } else { &self.trade_mode };
 
-        let entry_s = Self::round_tick(entry, tick_sz).to_string();
-        let stop_s = Self::round_tick(stop, tick_sz).to_string();
-        let target_s = Self::round_tick(target, tick_sz).to_string();
+        // entry/stop/target were already snapped to tick at the spec lookup
+        // above; stringifying directly avoids a redundant rounding pass.
+        let entry_s = entry.to_string();
+        let stop_s = stop.to_string();
+        let target_s = target.to_string();
 
         let attached_tp_sl = serde_json::json!([{
             "attachAlgoClOrdId": format!("pa{}s", signal_id),
@@ -884,4 +883,63 @@ impl OKXTradeExecutor {
             }
         }
     }
+}
+
+/// Read the newest `want` lines of an append-only JSONL file without loading
+/// the whole file into memory or parsing every record.
+///
+/// Bytes are read backwards in blocks and assembled into a contiguous suffix,
+/// so multibyte content stays intact within that suffix. Lines are split on
+/// `\n` (a byte that never appears inside a UTF-8 sequence). If the read did not
+/// reach the start of the file, the first fragment is a partial line and is
+/// dropped; callers pass generous headroom so enough *live* rows remain.
+fn read_audit_tail_lines(path: &std::path::Path, want: usize) -> Vec<String> {
+    const CHUNK: u64 = 64 * 1024;
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let size = match file.metadata() {
+        Ok(m) => m.len(),
+        Err(_) => return Vec::new(),
+    };
+    if size == 0 {
+        return Vec::new();
+    }
+
+    let mut collected: Vec<u8> = Vec::new();
+    let mut newlines: usize = 0;
+    let mut pos = size;
+    while pos > 0 {
+        let read_len = CHUNK.min(pos) as usize;
+        pos -= read_len as u64;
+        if file.seek(SeekFrom::Start(pos)).is_err() {
+            break;
+        }
+        let mut buf = vec![0u8; read_len];
+        if file.read_exact(&mut buf).is_err() {
+            break;
+        }
+        newlines += buf.iter().filter(|&&b| b == b'\n').count();
+        // Prepend this lower block so `collected` stays in file order.
+        buf.extend_from_slice(&collected);
+        collected = buf;
+        if newlines > want {
+            break;
+        }
+    }
+
+    let text = String::from_utf8_lossy(&collected);
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    if pos > 0 && !lines.is_empty() {
+        // Window started mid-file: the first segment may be a truncated line.
+        lines.remove(0);
+    }
+    // Newest first, dropping blank fragments.
+    lines
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .map(|l| l.to_string())
+        .collect()
 }

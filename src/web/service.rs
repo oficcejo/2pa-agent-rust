@@ -1161,7 +1161,6 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         execute: bool,
         system_override: Option<&str>,
     ) -> Result<Value> {
-        let _operation_guard = self.operation_lock.lock().await;
         if execute { self.ensure_execution_enabled()?; }
         anyhow::ensure!((20..=800).contains(&bar_count), "分析 K 线数量必须在 20 至 800 之间");
         let system = match system_override {
@@ -1191,8 +1190,28 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         } else {
             (bar_count + INDICATOR_WARMUP_BARS + 20).max(100)
         };
-        let raw_bars = self.fetch_raw_candles(inst_id, timeframe, fetch_limit).await.context("读取分析行情失败")?;
+
+        // 2. 高时间框架 (HTF) 宏观共振周期（先确定，以便与主行情并行拉取）
+        let htf_tf: Option<&str> = if timeframe == "1m" || timeframe == "3m" || timeframe == "5m" || timeframe == "15m" {
+            Some("1H")
+        } else if timeframe == "30m" || timeframe == "1h" {
+            Some("4H")
+        } else {
+            None
+        };
+
+        // C2: 主行情与 HTF 行情为两次独立网络往返，并行拉取以消除串行等待。
         let frame_bars = bar_count;
+        let (raw_bars_res, htf_bars_opt) = tokio::join!(
+            self.fetch_raw_candles(inst_id, timeframe, fetch_limit),
+            async {
+                match htf_tf {
+                    Some(h) => self.fetch_raw_candles(inst_id, h, 220).await.ok(),
+                    None => None,
+                }
+            }
+        );
+        let raw_bars = raw_bars_res.context("读取分析行情失败")?;
         let frame = build_analysis_frame(&raw_bars, frame_bars, inst_id, timeframe, None)
             .ok_or_else(|| anyhow!("not enough closed OKX candles to build {}-bar analysis", frame_bars))?;
 
@@ -1204,19 +1223,12 @@ LEARNING_SHADOW_TRADING_ENABLED={}
             crate::web::positions::read_position(&client, inst_id, &position_mode).await.context("读取账户持仓失败")?
         } else { PositionContext { symbol: inst_id.into(), pos_side: "none".into(), pos_size: "0".into(), ..Default::default() } };
 
-        // 2. 获取高时间框架 (HTF) 宏观共振背景
-        let htf_tf = if timeframe == "1m" || timeframe == "3m" || timeframe == "5m" || timeframe == "15m" {
-            Some("1H")
-        } else if timeframe == "30m" || timeframe == "1h" {
-            Some("4H")
-        } else {
-            None
-        };
-
+        // HTF 共振背景从已拉取的行情构建（无额外 await）。
         let mut htf_context_str = None;
         let mut structured_htf = None;
-        if let Some(htf) = htf_tf {
-            if let Ok(htf_bars) = self.fetch_raw_candles(inst_id, htf, 220).await {
+        if htf_bars_opt.is_some() {
+            let htf = htf_tf.unwrap_or("1H");
+            if let Some(htf_bars) = htf_bars_opt {
                 if let Some(htf_frame) = build_analysis_frame(&htf_bars, 20, inst_id, htf, None) {
                     structured_htf = Some(htf_frame.clone());
                     if let Some(latest) = htf_frame.bars.first() {
@@ -1249,6 +1261,9 @@ LEARNING_SHADOW_TRADING_ENABLED={}
 
         let mut execution_res = Value::Null;
         if execute {
+            // C1: 全局操作锁现在只保护下单关键区段，不再覆盖上方数秒级的 LLM 往返。
+            // 行情拉取与分析阶段可并发；真正的提交仍与手动下单/撤单/自动清理互斥。
+            let _operation_guard = self.operation_lock.lock().await;
             self.ensure_execution_enabled()?;
             if let Some(wrapper) = &record.stage2_decision {
                 let dec = wrapper.get("decision").unwrap_or(wrapper);
@@ -1365,6 +1380,25 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         anyhow::ensure!(settings.okx.demo_trading || settings.okx.live_trading_acknowledged, "实盘执行未授权");
         anyhow::ensure!(self.automation.read().enabled, "交易执行开关未开启");
         Ok(())
+    }
+
+    /// One-shot connectivity probe against OKX's public time endpoint.
+    ///
+    /// Run once at startup so a dead proxy or blocked network is reported up
+    /// front instead of surfacing later as a wall of opaque 502s in the console.
+    /// Uses a public endpoint, so it works even before credentials are set.
+    pub async fn connectivity_probe(&self) -> Result<Value> {
+        let client = self.okx_client.read().clone();
+        match client.health_check().await {
+            Ok(v) => {
+                info!("OKX 连通性自检通过: ts={}", v["ts"].as_str().unwrap_or("?"));
+                Ok(v)
+            }
+            Err(e) => {
+                warn!("OKX 连通性自检失败，请检查网络或 OKX_PROXY 配置（本机代理在线上不存在会导致全站 502）: {e:#}");
+                Err(e)
+            }
+        }
     }
 
     pub async fn automation_tick(&self) -> Result<()> {

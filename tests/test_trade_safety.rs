@@ -218,6 +218,7 @@ fn normalized_position_and_trailing_stop_handle_both_modes() {
 async fn private_routes_require_auth_and_reject_cross_site_writes() {
     let settings = Settings {
         web_auth_token: "test-password".into(),
+        web_auth_enabled: true,
         ..Default::default()
     };
     let app = create_router(Arc::new(WebTradingService::new(settings)));

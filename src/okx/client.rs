@@ -61,8 +61,20 @@ impl OKXClient {
             .or_else(|_| std::env::var("http_proxy"))
             .or_else(|_| std::env::var("all_proxy"))
         {
-            if let Ok(p) = reqwest::Proxy::all(&proxy_url) {
-                builder = builder.proxy(p);
+            match reqwest::Proxy::all(&proxy_url) {
+                Ok(p) => {
+                    // Surface the proxy in use: a localhost proxy that only
+                    // exists on a dev machine is the most common reason a
+                    // deployed server cannot reach OKX at all.
+                    tracing::info!("OKX 客户端使用代理: {}", proxy_url);
+                    builder = builder.proxy(p);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "OKX_PROXY 配置的代理无法解析，已忽略并直连: {} (来源环境变量值: {})",
+                        e, proxy_url
+                    );
+                }
             }
         }
 
@@ -123,59 +135,128 @@ impl OKXClient {
             String::new()
         };
 
-        let mut req_builder = self.http.request(method.clone(), &url);
+        // Only idempotent reads are retried. A POST (order placement, cancel,
+        // amend) is sent exactly once so a transient failure can never turn into
+        // a duplicate trade; the executor verifies terminal state separately.
+        let is_read = method == reqwest::Method::GET;
+        let max_attempts = if is_read { 3 } else { 1 };
 
-        if auth {
-            let creds = self.credentials.as_ref().ok_or_else(|| {
-                anyhow!("OKX credentials are not configured")
-            })?;
-            let timestamp = Self::timestamp_iso();
-            let sign = self.sign(&timestamp, method.as_str(), &request_path, &body_str)?;
+        let mut attempt = 0usize;
+        loop {
+            attempt += 1;
+            let retryable = attempt < max_attempts;
 
-            req_builder = req_builder
-                .header("OK-ACCESS-KEY", &creds.api_key)
-                .header("OK-ACCESS-SIGN", &sign)
-                .header("OK-ACCESS-TIMESTAMP", &timestamp)
-                .header("OK-ACCESS-PASSPHRASE", &creds.passphrase)
-                .header(CONTENT_TYPE, "application/json");
-
-            if self.demo_trading {
-                req_builder = req_builder.header("x-simulated-trading", "1");
-            }
-        }
-
-        if !body_str.is_empty() {
-            req_builder = req_builder.body(body_str);
-        }
-
-        let resp = req_builder.send().await?;
-        let status = resp.status();
-        let resp_text = resp.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("OKX HTTP {} error: {}", status, resp_text));
-        }
-
-        let resp_json: Value = serde_json::from_str(&resp_text)
-            .map_err(|e| anyhow!("Failed to parse OKX JSON: {} (raw: {})", e, resp_text))?;
-
-        let code = resp_json.get("code").and_then(|v| v.as_str()).unwrap_or("");
-        if code != "0" {
-            let msg = resp_json.get("msg").and_then(|v| v.as_str()).unwrap_or("Unknown OKX error");
-            let mut s_code = "";
-            let mut s_msg = "";
-            if let Some(arr) = resp_json.get("data").and_then(|v| v.as_array()) {
-                if let Some(first) = arr.first() {
-                    s_code = first.get("sCode").and_then(|v| v.as_str()).unwrap_or("");
-                    s_msg = first.get("sMsg").and_then(|v| v.as_str()).unwrap_or("");
+            let mut req_builder = self.http.request(method.clone(), &url);
+            if auth {
+                let creds = self.credentials.as_ref().ok_or_else(|| {
+                    anyhow!("OKX credentials are not configured")
+                })?;
+                // A fresh timestamp/signature per attempt: OKX rejects requests
+                // whose signature window has drifted, which a retry could hit.
+                let timestamp = Self::timestamp_iso();
+                let sign = self.sign(&timestamp, method.as_str(), &request_path, &body_str)?;
+                req_builder = req_builder
+                    .header("OK-ACCESS-KEY", &creds.api_key)
+                    .header("OK-ACCESS-SIGN", &sign)
+                    .header("OK-ACCESS-TIMESTAMP", &timestamp)
+                    .header("OK-ACCESS-PASSPHRASE", &creds.passphrase)
+                    .header(CONTENT_TYPE, "application/json");
+                if self.demo_trading {
+                    req_builder = req_builder.header("x-simulated-trading", "1");
                 }
             }
-            let err_text = format_okx_trade_error(code, msg, s_code, s_msg);
-            return Err(anyhow!("{}", err_text));
-        }
+            if !body_str.is_empty() {
+                req_builder = req_builder.body(body_str.clone());
+            }
 
-        let data = resp_json.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        Ok(data)
+            let resp = match req_builder.send().await {
+                Ok(r) => r,
+                Err(e) if retryable => {
+                    tracing::warn!("OKX 读请求网络失败，重试 {}/{}: {}", attempt, max_attempts - 1, e);
+                    Self::backoff(attempt, false).await;
+                    continue;
+                }
+                Err(e) => return Err(anyhow!("OKX 请求失败: {}", e)),
+            };
+
+            let status = resp.status();
+            let retryable_status = status.is_server_error() || status.as_u16() == 429;
+            let resp_text = match resp.text().await {
+                Ok(t) => t,
+                Err(e) if retryable => {
+                    tracing::warn!("OKX 读响应读取失败，重试 {}/{}: {}", attempt, max_attempts - 1, e);
+                    Self::backoff(attempt, false).await;
+                    continue;
+                }
+                Err(e) => return Err(anyhow!("OKX 响应读取失败: {}", e)),
+            };
+
+            if retryable_status && retryable {
+                tracing::warn!(
+                    "OKX 返回可重试状态 HTTP {}，重试 {}/{}",
+                    status.as_u16(), attempt, max_attempts - 1
+                );
+                Self::backoff(attempt, status.as_u16() == 429).await;
+                continue;
+            }
+
+            if !status.is_success() {
+                return Err(anyhow!("OKX HTTP {} error: {}", status, resp_text));
+            }
+
+            let resp_json: Value = match serde_json::from_str(&resp_text) {
+                Ok(v) => v,
+                Err(e) if retryable => {
+                    tracing::warn!("OKX JSON 解析失败，重试 {}/{}: {}", attempt, max_attempts - 1, e);
+                    Self::backoff(attempt, false).await;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(anyhow!("Failed to parse OKX JSON: {} (raw: {})", e, resp_text))
+                }
+            };
+
+            // Business-level error (code != "0") is a valid, final answer: never
+            // retried, so a rejected request is reported exactly as the venue said.
+            let code = resp_json.get("code").and_then(|v| v.as_str()).unwrap_or("");
+            if code != "0" {
+                let msg = resp_json.get("msg").and_then(|v| v.as_str()).unwrap_or("Unknown OKX error");
+                let mut s_code = "";
+                let mut s_msg = "";
+                if let Some(arr) = resp_json.get("data").and_then(|v| v.as_array()) {
+                    if let Some(first) = arr.first() {
+                        s_code = first.get("sCode").and_then(|v| v.as_str()).unwrap_or("");
+                        s_msg = first.get("sMsg").and_then(|v| v.as_str()).unwrap_or("");
+                    }
+                }
+                let err_text = format_okx_trade_error(code, msg, s_code, s_msg);
+                return Err(anyhow!("{}", err_text));
+            }
+
+            let data = resp_json.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            return Ok(data);
+        }
+    }
+
+    /// Exponential backoff between read retries. Rate-limited (429) responses
+    /// wait longer than plain transient failures; capped at ~2.4s.
+    async fn backoff(attempt: usize, rate_limited: bool) {
+        let base_ms: u64 = if rate_limited { 800 } else { 250 };
+        let delay_ms = base_ms.saturating_mul(1u64 << (attempt.saturating_sub(1)).min(3));
+        tokio::time::sleep(Duration::from_millis(delay_ms.min(2400))).await;
+    }
+
+    /// Verify the client can actually reach OKX over the current base URL and
+    /// proxy. Used as a startup probe so a misconfigured proxy (which otherwise
+    /// only shows up as a stream of 502s in the console) is reported once, up
+    /// front, with a clear message.
+    pub async fn health_check(&self) -> Result<Value> {
+        let data = self
+            .request(reqwest::Method::GET, "/api/v5/public/time", None, None, false)
+            .await?;
+        data.into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("OKX 时间接口返回空，连通性异常"))
     }
 
     pub async fn get_instruments(&self, inst_type: &str, inst_id: Option<&str>) -> Result<Vec<Value>> {

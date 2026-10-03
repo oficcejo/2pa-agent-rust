@@ -383,6 +383,11 @@ impl Default for OKXSettings {
 pub struct Settings {
     #[serde(default, skip_serializing)]
     pub web_auth_token: String,
+    /// Web 登录口令鉴权开关。默认 `false`（免登录，直接访问全部接口）；
+    /// 设为 `true`（配置 `web_auth_enabled` 或环境变量 `WEB_AUTH_ENABLED=true`）后
+    /// 恢复 `authenticate` 中间件的 Bearer/Basic 校验与跨站写请求拦截。
+    #[serde(default)]
+    pub web_auth_enabled: bool,
     #[serde(default)]
     pub provider: AIProviderSettings,
     #[serde(default)]
@@ -415,6 +420,10 @@ impl Settings {
         // Apply environment variable overrides
         if let Ok(v) = std::env::var("WEB_AUTH_TOKEN") {
             settings.web_auth_token = v.trim().to_string();
+        }
+        if let Ok(v) = std::env::var("WEB_AUTH_ENABLED") {
+            let on = matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on");
+            settings.web_auth_enabled = on;
         }
         if let Ok(v) = std::env::var("LLM_API_KEY").or_else(|_| std::env::var("AI_API_KEY")) {
             if !v.trim().is_empty() { settings.provider.api_key = v.trim().to_string(); }

@@ -327,3 +327,76 @@ fn receipt_fields_must_not_change_the_signal_id() {
     assert_eq!(plain, with_receipt, "receipt stamping must not perturb the idempotency key");
     assert!(!plain.is_empty());
 }
+
+/// A submitted position-management receipt (a close) is a record about an
+/// existing position, not a new trade. It must never be reconciled into its own
+/// outcome, and it must not be persisted under its own signal id.
+fn management_close(ts: i64) -> AuditEntry {
+    let mut e = audit_entry();
+    e.signal_id = "sig-close".into();
+    e.id = "audit-close".into();
+    e.order_id = "ord-close".into();
+    e.order_type = "平仓".into();
+    e.timestamp_ms = ts;
+    e
+}
+
+#[tokio::test]
+async fn management_rows_are_never_reconciled_as_trades() {
+    let mock = support::Mock::start(mock_routes("filled", "1", "100.0")).await;
+    let root = temp_dir("mgmt");
+    let store = OutcomeStore::new(root.join("outcomes"));
+    let writer = ExperienceWriter::new(root.join("experience"));
+
+    let reconciler = Reconciler::new(mock.client.clone(), store.clone(), writer.clone());
+    // One opening row plus one close row. Only the opening is a trade.
+    let report = reconciler
+        .reconcile(&[audit_entry(), management_close(ENTRY_TS + 3_600_000)], &policy(), 96, 0, true)
+        .await;
+
+    assert_eq!(report.checked, 1, "only the opening row is counted as a trade");
+    assert_eq!(report.skipped_management, 1);
+    assert_eq!(report.resolved, 1, "errors: {:?}", report.errors);
+    assert!(!store.exists("sig-close"), "a management receipt must not become an outcome");
+    // The mechanical target was hit before any early close, so it stays a win.
+    assert_eq!(store.load(SIGNAL_ID).unwrap().exit_reason, "take_profit");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn early_close_is_attributed_to_the_open_position() {
+    // Candles hover between stop (99) and target (102): mechanically the trade
+    // never resolves. A later close receipt must attribute the real early exit.
+    let rows = vec![
+        candle_row(ENTRY_TS + 900_000, "100", "100.4", "99.8", "100.2"),
+        candle_row(ENTRY_TS + 1_800_000, "100.2", "100.6", "100.0", "100.4"),
+        candle_row(ENTRY_TS + 2_700_000, "100.4", "100.8", "100.2", "100.5"),
+    ];
+    let routes = HashMap::from([
+        (
+            "/api/v5/trade/order".to_string(),
+            support::ok(json!([{"state":"filled","accFillSz":"1","sz":"1","avgPx":"100.0"}])),
+        ),
+        (
+            "/api/v5/market/candles".to_string(),
+            support::ok(serde_json::Value::Array(rows)),
+        ),
+    ]);
+    let mock = support::Mock::start(routes).await;
+    let root = temp_dir("earlyclose");
+    let store = OutcomeStore::new(root.join("outcomes"));
+    let writer = ExperienceWriter::new(root.join("experience"));
+
+    let reconciler = Reconciler::new(mock.client.clone(), store.clone(), writer.clone());
+    let report = reconciler
+        .reconcile(&[audit_entry(), management_close(ENTRY_TS + 3_600_000)], &policy(), 96, 0, true)
+        .await;
+    assert_eq!(report.resolved, 1, "errors: {:?}", report.errors);
+
+    let outcome = store.load(SIGNAL_ID).unwrap();
+    assert_eq!(outcome.exit_reason, "closed_early", "real early exit must override the open walk-forward");
+    assert!(approx(outcome.r_multiple, 0.5), "r={}", outcome.r_multiple);
+
+    let _ = std::fs::remove_dir_all(&root);
+}

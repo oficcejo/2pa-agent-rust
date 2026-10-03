@@ -259,6 +259,10 @@ pub struct ReconcileReport {
     pub unfilled: usize,
     pub experiences_written: usize,
     pub skipped_existing: usize,
+    /// Position-management rows (close / amend) are receipts about an existing
+    /// position, not new trades. They are excluded from outcome generation and
+    /// counted here so the console can tell them apart from real signals.
+    pub skipped_management: usize,
     pub errors: Vec<String>,
     #[serde(skip)]
     pub newly_resolved: Vec<TradeOutcome>,
@@ -294,6 +298,14 @@ impl Reconciler {
     ///
     /// `max_age_ms` bounds how far back a single pass reaches, so a first run
     /// against a long audit log does not hammer the venue.
+    ///
+    /// Three passes:
+    /// 1. Classify rows. Position-management receipts (close / amend) are never
+    ///    treated as trades; closing rows are collected so an open position can
+    ///    later be attributed a real early exit (A1).
+    /// 2. Gather the opening rows still needing an outcome, pairing each with
+    ///    the early-close timestamp (if any) that belongs to its position.
+    /// 3. Prefetch candles once per (instrument, timeframe) and resolve (C4).
     pub async fn reconcile(
         &self,
         entries: &[AuditEntry],
@@ -302,11 +314,44 @@ impl Reconciler {
         max_age_ms: i64,
         write_experience: bool,
     ) -> ReconcileReport {
+        use std::collections::{HashMap, HashSet};
         let mut report = ReconcileReport::default();
         let now = crate::util::timefmt::now_local_ms();
 
+        // Pass 1: classify every submitted row.
+        let mut open_times: HashMap<(String, String), Vec<i64>> = HashMap::new();
+        let mut closes: HashMap<(String, String), Vec<i64>> = HashMap::new();
         for entry in entries {
             if !entry.submitted || entry.signal_id.is_empty() {
+                continue;
+            }
+            let key = (entry.instrument.clone(), entry.timeframe.clone());
+            if is_management_row(entry) {
+                report.skipped_management += 1;
+                if is_closing_row(entry) {
+                    closes.entry(key).or_default().push(entry.timestamp_ms);
+                }
+                continue;
+            }
+            open_times.entry(key).or_default().push(entry.timestamp_ms);
+        }
+        for v in closes.values_mut() { v.sort_unstable(); }
+        for v in open_times.values_mut() { v.sort_unstable(); }
+
+        // Pass 2: opening rows that still need an outcome, each paired with the
+        // early-close timestamp of the position it opened (the first closing
+        // receipt after this open and before the next open of the same market).
+        struct Pending<'a> {
+            entry: &'a AuditEntry,
+            early_close_ms: Option<i64>,
+        }
+        let mut pending: Vec<Pending> = Vec::new();
+        let mut groups: HashSet<(String, String)> = HashSet::new();
+        for entry in entries {
+            if !entry.submitted || entry.signal_id.is_empty() {
+                continue;
+            }
+            if is_management_row(entry) {
                 continue;
             }
             if self.store.exists(&entry.signal_id) {
@@ -316,10 +361,47 @@ impl Reconciler {
             if max_age_ms > 0 && now.saturating_sub(entry.timestamp_ms) > max_age_ms {
                 continue;
             }
-            report.checked += 1;
+            let key = (entry.instrument.clone(), entry.timeframe.clone());
+            let next_open = open_times
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .find(|&&t| t > entry.timestamp_ms)
+                .copied();
+            let early_close_ms = closes
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .filter(|&&t| t > entry.timestamp_ms)
+                .find(|&&t| next_open.map_or(true, |no| t < no))
+                .copied();
+            groups.insert(key);
+            pending.push(Pending { entry, early_close_ms });
+        }
 
+        // Pass 3: one candle fetch per (instrument, timeframe), reused by every
+        // entry in that group. Bars keep their timestamps for the early-close cut.
+        let mut bars_cache: HashMap<(String, String), Vec<(i64, crate::learning::feedback::BarHlc)>> =
+            HashMap::new();
+        for key in groups {
+            let bars = self.fetch_bars_ts(&key.0, &key.1).await.unwrap_or_else(|e| {
+                debug!("预取 {} {} K 线失败: {e:#}", key.0, key.1);
+                Vec::new()
+            });
+            bars_cache.insert(key, bars);
+        }
+
+        let empty_bars: Vec<(i64, crate::learning::feedback::BarHlc)> = Vec::new();
+        for p in pending {
+            let entry = p.entry;
+            report.checked += 1;
             let context = SignalContext::from_audit(entry);
-            match self.resolve_one(entry, &context, policy, max_hold_bars).await {
+            let key = (entry.instrument.clone(), entry.timeframe.clone());
+            let bars_ts = bars_cache.get(&key).unwrap_or(&empty_bars);
+            match self
+                .resolve_one(entry, &context, policy, max_hold_bars, bars_ts, p.early_close_ms)
+                .await
+            {
                 Ok(Some(outcome)) => {
                     if outcome.filled {
                         report.resolved += 1;
@@ -346,21 +428,30 @@ impl Reconciler {
             }
         }
 
-        if report.checked > 0 {
+        if report.checked > 0 || report.skipped_management > 0 {
             info!(
-                "对账完成: 检查 {} / 已解决 {} / 仍持有 {} / 未成交 {} / 写入经验 {}",
-                report.checked, report.resolved, report.still_open, report.unfilled, report.experiences_written
+                "对账完成: 检查 {} / 已解决 {} / 仍持有 {} / 未成交 {} / 写入经验 {} / 跳过管理动作 {}",
+                report.checked, report.resolved, report.still_open, report.unfilled,
+                report.experiences_written, report.skipped_management
             );
         }
         report
     }
 
+    /// Resolve one opening order into an outcome.
+    ///
+    /// `bars_ts` is the group's prefetched candle set (timestamp + HLC, oldest
+    /// first); `early_close_ms` is the timestamp of a later close receipt that
+    /// belongs to this position, used to report a real early exit instead of a
+    /// mechanical walk-forward result.
     async fn resolve_one(
         &self,
         entry: &AuditEntry,
         context: &SignalContext,
         policy: &QualificationPolicy,
         max_hold_bars: u32,
+        bars_ts: &[(i64, crate::learning::feedback::BarHlc)],
+        early_close_ms: Option<i64>,
     ) -> anyhow::Result<Option<TradeOutcome>> {
         // A failed lookup must not be silently treated as "unfilled".
         let is_algo = entry.order_type == "突破单"
@@ -434,13 +525,41 @@ impl Reconciler {
             anyhow::bail!("审计记录缺少可用的入场/止损/止盈价");
         }
 
-        let bars = if filled {
-            self.fetch_bars_after(&entry.instrument, &entry.timeframe, entry.timestamp_ms)
-                .await
-                .unwrap_or_default()
+        // Slice the group's candles to this position's window: from the entry
+        // bar forward, and (when a close receipt exists) up to that close.
+        let mut bars: Vec<crate::learning::feedback::BarHlc> = if filled {
+            bars_ts
+                .iter()
+                .filter(|(t, _)| *t >= entry.timestamp_ms)
+                .filter(|(t, _)| early_close_ms.map_or(true, |c| *t <= c))
+                .map(|(_, b)| b.clone())
+                .collect()
         } else {
             Vec::new()
         };
+        debug!("对账载入 {} 根 {} K 线 (信号 {})", bars.len(), entry.timeframe, entry.signal_id);
+
+        let mut max_hold = max_hold_bars;
+        let mut hit_exit_reason: Option<ExitReason> = None;
+        // A1: if a close receipt covers this position and the trade had not
+        // otherwise reached its stop/target within the window, report the real
+        // early exit at the last observed close instead of a still-open None.
+        if filled {
+            if let Some(_close_ms) = early_close_ms {
+                if !bars.is_empty()
+                    && resolve_exit(&entry.direction, entry_px, stop_px, target_px, &bars, max_hold_bars)
+                        .is_none()
+                {
+                    let last_close = bars.last().map(|b| b.close).unwrap_or(entry_px);
+                    // A zero-range bar at the close cannot touch stop or target
+                    // (both lie beyond it in this window), so the walk settles
+                    // exactly here; the reason is then relabelled ClosedEarly.
+                    bars.push(crate::learning::feedback::BarHlc::new(last_close, last_close, last_close));
+                    max_hold = bars.len() as u32;
+                    hit_exit_reason = Some(ExitReason::ClosedEarly);
+                }
+            }
+        }
 
         let size = if filled && acc > 0.0 {
             acc
@@ -466,41 +585,35 @@ impl Reconciler {
             fill_ratio,
             created_ms: entry.timestamp_ms,
             bars: &bars,
-            max_hold_bars,
+            max_hold_bars: max_hold,
             policy,
-            hit_exit_reason: None,
+            hit_exit_reason,
         };
         Ok(build_outcome(&input))
     }
 
-    /// Closed bars at or after `since_ms`, oldest first.
-    async fn fetch_bars_after(
+    /// Closed bars at or after the entry, as `(timestamp_ms, HLC)` oldest-first.
+    async fn fetch_bars_ts(
         &self,
         inst_id: &str,
         timeframe: &str,
-        since_ms: i64,
-    ) -> anyhow::Result<Vec<crate::learning::feedback::BarHlc>> {
+    ) -> anyhow::Result<Vec<(i64, crate::learning::feedback::BarHlc)>> {
         let rows = self
             .client
             .get_candles_paginated(inst_id, timeframe, 300, true)
             .await?;
-        let mut bars: Vec<crate::learning::feedback::BarHlc> = rows
+        let mut bars: Vec<(i64, crate::learning::feedback::BarHlc)> = rows
             .iter()
             .filter(|r| r.len() >= 5)
             .filter_map(|r| {
                 let ts = r[0].parse::<i64>().ok()?;
-                if ts < since_ms {
-                    return None;
-                }
                 let high = r[2].parse::<f64>().ok()?;
                 let low = r[3].parse::<f64>().ok()?;
                 let close = r[4].parse::<f64>().ok()?;
                 Some((ts, crate::learning::feedback::BarHlc::new(high, low, close)))
             })
-            .map(|(_, b)| b)
             .collect();
-        bars.reverse(); // OKX returns newest first
-        debug!("对账载入 {} 根 {} K 线", bars.len(), timeframe);
+        bars.sort_by_key(|(t, _)| *t); // OKX returns newest first -> oldest first
         Ok(bars)
     }
 }
@@ -522,6 +635,24 @@ pub fn classify_management(action: &str) -> Option<ExitReason> {
         "CLOSE_EARLY" => Some(ExitReason::ClosedEarly),
         _ => None,
     }
+}
+
+/// A position-management receipt (close or amend) describes an existing
+/// position, not a new trade. Such rows must never be reconciled into their own
+/// outcome: they have no independent entry/stop/target and, for amends, no order
+/// to poll. Matching the Chinese `order_type` written by the management branch
+/// in `web::service` keeps opening rows (`limit`/`market`/`trigger`) untouched.
+pub fn is_management_row(entry: &AuditEntry) -> bool {
+    matches!(
+        entry.order_type.as_str(),
+        "平仓" | "修改止损" | "修改止盈" | "修改止盈止损"
+    )
+}
+
+/// Of the management rows, only a close actually ends the position and can
+/// therefore supply a real exit time for the opening it belongs to.
+pub fn is_closing_row(entry: &AuditEntry) -> bool {
+    entry.order_type == "平仓"
 }
 
 /// Helper for callers that only have bars and want MFE/MAE for display.

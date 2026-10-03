@@ -10,7 +10,7 @@ use std::time::Duration;
 use tracing::info;
 
 pub fn create_router(service: Arc<WebTradingService>) -> Router {
-    Router::new()
+    let app = Router::new()
         .route("/", get(handle_index))
         .route("/static/*path", get(handle_static))
         .route("/api/status", get(handle_status))
@@ -43,17 +43,50 @@ pub fn create_router(service: Arc<WebTradingService>) -> Router {
         .route("/api/learning/shadow_trading/toggle", post(handle_toggle_shadow_trading))
         .route("/api/backtest/run", post(handle_run_backtest))
         .route("/api/backtest/status/:id", get(handle_backtest_status))
-        .route("/api/backtest/report/:id", get(handle_backtest_report))
-        .layer(axum::middleware::from_fn_with_state(service.clone(), crate::web::auth::authenticate))
+        .route("/api/backtest/report/:id", get(handle_backtest_report));
+
+    // 鉴权开关：默认关闭（web_auth_enabled = false）时，全部路由免登录直接可达。
+    // 开启后才挂上 authenticate 中间件（Bearer/Basic 校验 + 跨站写拦截）。
+    if service.settings.read().web_auth_enabled {
+        app.layer(axum::middleware::from_fn_with_state(
+            service.clone(),
+            crate::web::auth::authenticate,
+        ))
         .with_state(service)
+    } else {
+        app.with_state(service)
+    }
 }
 
 pub async fn run_server(host: &str, port: u16, mut settings: Settings) -> Result<()> {
-    if settings.web_auth_token.is_empty() {
-        settings.web_auth_token = crate::web::auth::load_or_create_token(std::path::Path::new("config/.web-auth-token"))?;
-        info!("Web 登录用户名 admin；口令保存在 config/.web-auth-token，远程访问请使用 HTTPS");
+    if settings.web_auth_enabled {
+        if settings.web_auth_token.is_empty() {
+            settings.web_auth_token = crate::web::auth::load_or_create_token(std::path::Path::new("config/.web-auth-token"))?;
+            info!("Web 登录用户名 admin；口令保存在 config/.web-auth-token，远程访问请使用 HTTPS");
+        }
+    } else {
+        // 鉴权已关闭：若绑定非回环地址，醒目提示风险（本系统可直接驱动真实下单）。
+        let loopback = host == "127.0.0.1" || host == "localhost" || host == "::1" || host.starts_with("127.");
+        if loopback {
+            info!("Web 登录鉴权已关闭（仅本地回环），可直接访问 http://{}:{}", host, port);
+        } else {
+            info!(
+                "⚠️⚠️⚠️ 安全警告：Web 登录鉴权已关闭且服务绑定在非回环地址 {}:{}！\n\
+                 任何能访问该端口的人都可以直接驱动真实下单、修改 OKX 密钥、保存 .env。\n\
+                 强烈建议改为本地访问，或设置 WEB_AUTH_ENABLED=true 重新开启登录。",
+                host, port
+            );
+        }
     }
     let service = Arc::new(WebTradingService::new(settings.clone()));
+
+    // One-shot OKX connectivity probe so a dead proxy / blocked network is
+    // reported immediately instead of as opaque 502s later on.
+    let probe_service = Arc::clone(&service);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _ = probe_service.connectivity_probe().await;
+    });
 
     // Spawn background automation tick loop
     let poll_seconds = settings.okx.automation_poll_seconds.max(5);
