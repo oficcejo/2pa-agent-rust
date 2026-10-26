@@ -12,6 +12,37 @@ use std::time::{Duration, Instant};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Normalise a timeframe to OKX's `bar` spelling.
+///
+/// OKX is case-sensitive for hour/day units: `1H/4H/1D` are valid while
+/// `1h/4h/1d` are rejected with `51000 Parameter bar error`. The web console
+/// offers lowercase values, so every request that reaches the venue must be
+/// normalised here rather than at each call site.
+pub fn okx_bar(bar: &str) -> String {
+    let b = bar.trim();
+    // "1M" is the MONTHLY bar in OKX while "1m" is one minute: the original
+    // case must be checked before lower-casing.
+    if b == "1M" {
+        return "1M".into();
+    }
+    match b.to_ascii_lowercase().as_str() {
+        "1m" => "1m".into(),
+        "3m" => "3m".into(),
+        "5m" => "5m".into(),
+        "15m" => "15m".into(),
+        "30m" => "30m".into(),
+        "1h" => "1H".into(),
+        "2h" => "2H".into(),
+        "4h" => "4H".into(),
+        "6h" => "6H".into(),
+        "12h" => "12H".into(),
+        "1d" => "1D".into(),
+        "3d" => "3D".into(),
+        "1w" => "1W".into(),
+        _ => b.to_string(),
+    }
+}
+
 /// The venue answered and definitively rejected the request (sCode != 0).
 ///
 /// Transport-level failures (timeout, connection reset) stay plain `anyhow`
@@ -337,9 +368,10 @@ impl OKXClient {
         after: Option<&str>,
     ) -> Result<Vec<Vec<String>>> {
         let limit_str = limit.min(300).to_string();
+        let bar = okx_bar(bar);
         let mut params = vec![
             ("instId", inst_id),
-            ("bar", bar),
+            ("bar", bar.as_str()),
             ("limit", limit_str.as_str()),
         ];
         if let Some(a) = after {
@@ -371,9 +403,10 @@ impl OKXClient {
         before: Option<&str>,
     ) -> Result<Vec<Vec<String>>> {
         let limit_str = limit.min(100).to_string();
+        let bar = okx_bar(bar);
         let mut params = vec![
             ("instId", inst_id),
-            ("bar", bar),
+            ("bar", bar.as_str()),
             ("limit", limit_str.as_str()),
         ];
         if let Some(a) = after {
@@ -712,5 +745,39 @@ pub fn format_okx_trade_error(code: &str, msg: &str, s_code: &str, s_msg: &str) 
         }
     } else {
         format!("OKX 接口错误 [{}]: {}", code, msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::okx_bar;
+
+    #[test]
+    fn okx_bar_normalises_hour_and_day_units() {
+        // OKX rejects lowercase hour/day bars with 51000 Parameter bar error.
+        assert_eq!(okx_bar("1h"), "1H");
+        assert_eq!(okx_bar("4h"), "4H");
+        assert_eq!(okx_bar("2h"), "2H");
+        assert_eq!(okx_bar("6h"), "6H");
+        assert_eq!(okx_bar("12h"), "12H");
+        assert_eq!(okx_bar("1d"), "1D");
+        assert_eq!(okx_bar("3d"), "3D");
+        assert_eq!(okx_bar("1w"), "1W");
+        // Minute bars stay as they are.
+        assert_eq!(okx_bar("1m"), "1m");
+        assert_eq!(okx_bar("5m"), "5m");
+        assert_eq!(okx_bar("15m"), "15m");
+        assert_eq!(okx_bar("30m"), "30m");
+        // Uppercase input is already canonical.
+        assert_eq!(okx_bar("1H"), "1H");
+        assert_eq!(okx_bar("4H"), "4H");
+        assert_eq!(okx_bar("1D"), "1D");
+    }
+
+    #[test]
+    fn okx_bar_keeps_monthly_bar_distinct_from_minute() {
+        // "1M" is the monthly bar, "1m" is one minute.
+        assert_eq!(okx_bar("1M"), "1M");
+        assert_eq!(okx_bar("1m"), "1m");
     }
 }

@@ -85,7 +85,7 @@ pub async fn handle_instruments(
 ) -> Response {
     match service.instruments(&query.inst_type).await {
         Ok(data) => Json(serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()))).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -95,7 +95,7 @@ pub async fn handle_candles(
 ) -> Response {
     match service.candles(&query.inst_id, &query.timeframe, query.limit).await {
         Ok(data) => Json(serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()))).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -104,7 +104,7 @@ pub async fn handle_account(
 ) -> Response {
     match service.account().await {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -152,7 +152,7 @@ pub async fn handle_analyze(
 ) -> Response {
     match service.analyze(&req.inst_id, &req.timeframe, req.bar_count, req.execute, req.trading_system.as_deref()).await {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -173,7 +173,7 @@ pub async fn handle_automation(
         req.trading_system.as_deref(),
     ) {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -189,7 +189,7 @@ pub async fn handle_save_config(
 ) -> Response {
     match service.save_env_config(&req) {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -204,7 +204,7 @@ pub async fn handle_contract_specs(
 ) -> Response {
     match service.get_contract_specs(query.symbol.as_deref()).await {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -238,7 +238,7 @@ pub async fn handle_cancel_order(
 ) -> Response {
     match service.cancel_order(&req.inst_id, req.ord_id.as_deref(), req.cl_ord_id.as_deref(), req.algo_id.as_deref()).await {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -253,7 +253,7 @@ pub async fn handle_cancel_all_orders(
 ) -> Response {
     match service.cancel_all_orders(req.inst_id.as_deref()).await {
         Ok(count) => Json(serde_json::json!({ "cancelled_count": count })).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -267,7 +267,7 @@ pub async fn handle_learning_report(State(service): State<AppState>) -> Response
 pub async fn handle_learning_reconcile(State(service): State<AppState>) -> Response {
     match service.reconcile_outcomes().await {
         Ok(report) => Json(report).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -297,7 +297,7 @@ pub async fn handle_publish_prompt(
 ) -> Response {
     match service.publish_prompt_candidate(&req.content, &req.note) {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -314,14 +314,14 @@ pub async fn handle_activate_prompt(
 ) -> Response {
     match service.activate_prompt_version(&req.version, req.force) {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
 pub async fn handle_rollback_prompt(State(service): State<AppState>) -> Response {
     match service.rollback_prompt_version() {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -329,7 +329,7 @@ pub async fn handle_rollback_prompt(State(service): State<AppState>) -> Response
 pub async fn handle_learning_propose(State(service): State<AppState>) -> Response {
     match service.propose_prompt_mutation() {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -345,7 +345,7 @@ pub async fn handle_solidify_episode(
 ) -> Response {
     match service.solidify_outcome_to_episode(&req.signal_id) {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -353,7 +353,7 @@ pub async fn handle_solidify_episode(
 pub async fn handle_list_benchmark_episodes(State(service): State<AppState>) -> Response {
     match service.list_benchmark_episodes() {
         Ok(data) => Json(data).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 
@@ -381,7 +381,7 @@ pub async fn handle_run_backtest(
             })),
         )
             .into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{:#}", e)).into_response(),
     }
 }
 

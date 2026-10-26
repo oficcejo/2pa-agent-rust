@@ -1205,9 +1205,12 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         };
 
         // 2. 高时间框架 (HTF) 宏观共振周期（先确定，以便与主行情并行拉取）
-        let htf_tf: Option<&str> = if timeframe == "1m" || timeframe == "3m" || timeframe == "5m" || timeframe == "15m" {
+        // 周期大小写统一按小写比较：前端给的是 "1h"，外部调用可能给 "1H"，
+        // 两种写法都必须映射到同一个高周期。
+        let tf_cmp = timeframe.trim().to_lowercase();
+        let htf_tf: Option<&str> = if tf_cmp == "1m" || tf_cmp == "3m" || tf_cmp == "5m" || tf_cmp == "15m" {
             Some("1H")
-        } else if timeframe == "30m" || timeframe == "1h" {
+        } else if tf_cmp == "30m" || tf_cmp == "1h" {
             Some("4H")
         } else {
             None
