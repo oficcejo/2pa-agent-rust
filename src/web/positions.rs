@@ -2,10 +2,12 @@ use crate::{
     data::base::PositionContext,
     okx::{
         client::OKXClient,
-        trading::{BROKER_TAG, PA_CLIENT_ORDER_PREFIX},
+        trading::{classify_instrument, round_tick_decimal, BROKER_TAG, PA_CLIENT_ORDER_PREFIX},
     },
 };
 use anyhow::{anyhow, ensure, Result};
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use serde_json::{json, Value};
 
 pub fn number(row: &Value, key: &str) -> Option<f64> {
@@ -120,24 +122,39 @@ pub async fn read_position(
     Ok(pos)
 }
 
-pub fn validate_stop_change(pos: &PositionContext, stop: f64) -> Result<()> {
+/// `ref_px` is the price the SL actually triggers on. Attached algos use
+/// `slTriggerPxType: "last"`, so the *last* price — not the mark — is what an
+/// amended stop must stay on the safe side of; otherwise a "tightened" stop can
+/// sit above last and fire a market close immediately.
+pub fn validate_stop_change(pos: &PositionContext, stop: f64, ref_px: Option<f64>) -> Result<()> {
     ensure!(stop.is_finite() && stop > 0.0, "止损必须为正数");
     let old = pos
         .current_sl
         .ok_or_else(|| anyhow!("当前止损未知，拒绝自动修改"))?;
-    let mark = pos
-        .mark_px
-        .filter(|p| *p > 0.0)
-        .ok_or_else(|| anyhow!("当前标记价格未知"))?;
+    let ref_desc;
+    let reference = match ref_px.filter(|p| *p > 0.0) {
+        Some(p) => {
+            ref_desc = "最新成交价";
+            p
+        }
+        None => {
+            ref_desc = "标记价格";
+            pos.mark_px
+                .filter(|p| *p > 0.0)
+                .ok_or_else(|| anyhow!("当前标记价格未知"))?
+        }
+    };
     if pos.pos_side == "long" {
         ensure!(
-            stop >= old && stop < mark,
-            "多仓止损只能收紧，且必须低于当前价格"
+            stop >= old && stop < reference,
+            "多仓止损只能收紧，且必须低于{}",
+            ref_desc
         );
     } else {
         ensure!(
-            stop <= old && stop > mark,
-            "空仓止损只能收紧，且必须高于当前价格"
+            stop <= old && stop > reference,
+            "空仓止损只能收紧，且必须高于{}",
+            ref_desc
         );
     }
     Ok(())
@@ -154,6 +171,14 @@ pub async fn execute_management(
     let action = decision["action"].as_str().unwrap_or("");
     let order_type = decision["order_type"].as_str().unwrap_or("");
     if action == "CLOSE_EARLY" || order_type == "平仓" {
+        // A close must be an explicit close intent: a management action such
+        // as MOVE_STOP_LOSS combined with a "平仓" order_type must never fall
+        // through to closing the whole position.
+        ensure!(
+            action.is_empty() || action == "CLOSE_EARLY",
+            "平仓指令与 action={} 冲突，拒绝执行",
+            action
+        );
         return client
             .close_position(
                 symbol,
@@ -175,55 +200,76 @@ pub async fn execute_management(
     let change_tp = combined
         || ["MOVE_TAKE_PROFIT", "TRAILING_TAKE_PROFIT"].contains(&action)
         || order_type == "修改止盈";
-    let inst_type = if symbol.ends_with("-SWAP") {
-        "SWAP"
-    } else if symbol.split('-').count() >= 4 {
-        "FUTURES"
-    } else {
-        "SPOT"
-    };
+    let inst_type = classify_instrument(symbol);
+    ensure!(inst_type != "OPTION", "暂不支持期权品种: {}", symbol);
     let instruments = client.get_instruments(inst_type, Some(symbol)).await?;
     let tick = instruments
         .first()
         .and_then(|v| number(v, "tickSz"))
         .filter(|v| *v > 0.0)
         .ok_or_else(|| anyhow!("无法读取价格精度"))?;
-    let rounded = |v: f64| (v / tick).round() * tick;
+    let tick_dec = Decimal::from_f64_retain(tick)
+        .filter(|t| *t > Decimal::ZERO)
+        .ok_or_else(|| anyhow!("价格精度无效"))?;
+    // Snap through exact decimal arithmetic: an f64 `(v / tick).round() * tick`
+    // yields values like 0.30000000000000004 whose to_string() OKX rejects.
+    let snap_tick = |v: f64| -> Option<Decimal> {
+        Decimal::from_f64_retain(v)
+            .filter(|d| *d > Decimal::ZERO)
+            .map(|d| round_tick_decimal(d, tick_dec))
+    };
     let sl = if change_sl {
         number(decision, "new_stop_loss_price")
             .or_else(|| number(decision, "stop_loss_price"))
-            .map(rounded)
+            .and_then(|v| snap_tick(v))
     } else {
         None
     };
     let tp = if change_tp {
         number(decision, "new_take_profit_price")
             .or_else(|| number(decision, "take_profit_price"))
-            .map(rounded)
+            .and_then(|v| snap_tick(v))
     } else {
         None
     };
     ensure!(sl.is_some() || tp.is_some(), "缺少有效的新止损/止盈价格");
-    if decision["strategy_version"] == crate::strategies::VERSION {
+    // The program-side management rules apply regardless of which strategy
+    // version stamped the decision: skipping them on a version mismatch used
+    // to be a validation bypass.
+    {
         let mut checked = decision.clone();
-        checked["new_stop_loss_price"] = serde_json::json!(sl);
-        checked["new_take_profit_price"] = serde_json::json!(tp);
+        checked["new_stop_loss_price"] = sl
+            .and_then(|d| d.to_f64())
+            .map(|f| json!(f))
+            .unwrap_or(Value::Null);
+        checked["new_take_profit_price"] = tp
+            .and_then(|d| d.to_f64())
+            .map(|f| json!(f))
+            .unwrap_or(Value::Null);
         crate::strategies::validate_management(&checked, Some(&pos), symbol)?;
     }
     if let Some(stop) = sl {
-        validate_stop_change(&pos, stop)?;
+        // Attached SL algos trigger on the LAST price; validate against it and
+        // fall back to the mark price only when the ticker is unavailable.
+        let last_px = client
+            .get_ticker(symbol)
+            .await
+            .ok()
+            .and_then(|t| number(&t, "last"));
+        validate_stop_change(&pos, stop.to_f64().unwrap_or_default(), last_px)?;
     }
     if let Some(target) = tp {
         let mark = pos
             .mark_px
             .filter(|p| *p > 0.0)
             .ok_or_else(|| anyhow!("当前价格未知"))?;
+        let target_f = target.to_f64().unwrap_or_default();
         ensure!(
-            target > 0.0
+            target_f > 0.0
                 && if pos.pos_side == "long" {
-                    target > mark
+                    target_f > mark
                 } else {
-                    target < mark
+                    target_f < mark
                 },
             "止盈价格位于错误方向"
         );

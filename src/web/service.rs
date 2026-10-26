@@ -398,7 +398,6 @@ OKX_BASE_URL={}
 OKX_DEMO_TRADING={}
 OKX_AUTO_TRADING_ENABLED=false
 OKX_LIVE_TRADING_ACKNOWLEDGED={}
-OKX_ENABLE_LIVE_TRADING=YES
 
 # ------------------------------ 订单与风控 ------------------------------
 OKX_DEFAULT_ORDER_SIZE={}
@@ -617,11 +616,16 @@ LEARNING_SHADOW_TRADING_ENABLED={}
 
         for (i, row) in raw_rows.iter().enumerate() {
             if row.len() < 6 { continue; }
-            let ts = row[0].parse::<i64>().unwrap_or(0);
-            let o = row[1].parse::<f64>().unwrap_or(0.0);
-            let h = row[2].parse::<f64>().unwrap_or(0.0);
-            let l = row[3].parse::<f64>().unwrap_or(0.0);
-            let c = row[4].parse::<f64>().unwrap_or(0.0);
+            // A row that fails to parse must be skipped, not zero-filled: an
+            // OHLC-of-zeros bar silently poisons ATR/geometry downstream.
+            let Some(ts) = row[0].parse::<i64>().ok() else { continue };
+            let (Some(o), Some(h), Some(l), Some(c)) = (
+                row[1].parse::<f64>().ok(),
+                row[2].parse::<f64>().ok(),
+                row[3].parse::<f64>().ok(),
+                row[4].parse::<f64>().ok(),
+            ) else { continue };
+            if !(o > 0.0 && h > 0.0 && l > 0.0 && c > 0.0) { continue; }
             let vol = row[5].parse::<f64>().unwrap_or(0.0);
             let closed = if row.len() > 8 { row[8] == "1" } else { i > 0 };
 
@@ -777,9 +781,15 @@ LEARNING_SHADOW_TRADING_ENABLED={}
     }
 
     pub fn decision_records(&self, limit: usize) -> Vec<Value> {
-        let paths = list_record_paths(&records_dir());
-        let mut records = Vec::new();
-        for p in paths.into_iter().take(limit) {
+        // Each record is a full pretty-printed analysis JSON parsed off disk;
+        // an unbounded limit let one request stall a worker thread for a long
+        // time once history grows. Cap it, and run the blocking IO off the
+        // async reactor thread.
+        let limit = limit.clamp(1, 200);
+        tokio::task::block_in_place(|| {
+            let paths = list_record_paths(&records_dir());
+            let mut records = Vec::new();
+            for p in paths.into_iter().take(limit) {
             let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
             if let Some(r) = load_record(&p) {
                 let dec_obj = r.stage2_decision.as_ref();
@@ -824,8 +834,9 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                 });
                 records.push(item);
             }
-        }
-        records
+            }
+            records
+        })
     }
 
     pub fn delete_decision_record(&self, record_id: &str) -> bool {
@@ -1165,9 +1176,11 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         anyhow::ensure!((20..=800).contains(&bar_count), "分析 K 线数量必须在 20 至 800 之间");
         let system = match system_override {
             Some(s) if !s.trim().is_empty() => {
-                let s_clean = crate::strategies::canonical(s).ok_or_else(|| anyhow!("未知交易系统"))?.to_string();
-                *self.current_trading_system.write() = s_clean.clone();
-                s_clean
+                // A one-shot analysis override only: writing it into the
+                // shared state used to silently re-target the LIVE automation
+                // loop (which trades real money) at whatever system the user
+                // happened to be trying out manually.
+                crate::strategies::canonical(s).ok_or_else(|| anyhow!("未知交易系统"))?.to_string()
             }
             _ => self.current_trading_system.read().clone(),
         };
@@ -1202,16 +1215,26 @@ LEARNING_SHADOW_TRADING_ENABLED={}
 
         // C2: 主行情与 HTF 行情为两次独立网络往返，并行拉取以消除串行等待。
         let frame_bars = bar_count;
-        let (raw_bars_res, htf_bars_opt) = tokio::join!(
+        let (raw_bars_res, htf_bars_res) = tokio::join!(
             self.fetch_raw_candles(inst_id, timeframe, fetch_limit),
             async {
                 match htf_tf {
-                    Some(h) => self.fetch_raw_candles(inst_id, h, 220).await.ok(),
-                    None => None,
+                    Some(h) => self.fetch_raw_candles(inst_id, h, 220).await,
+                    None => Ok(Vec::new()),
                 }
             }
         );
         let raw_bars = raw_bars_res.context("读取分析行情失败")?;
+        // HTF resonance is a hard risk input for these systems: swallowing the
+        // fetch error with `.ok()` used to run the analysis without the higher
+        // timeframe confirmation and let the order through anyway.
+        let htf_bars_opt = match (htf_tf, htf_bars_res) {
+            (Some(_), Err(e)) => {
+                return Err(e).context("读取高周期行情失败（高周期同向为核心风控条件，拒绝在缺失下继续分析）")
+            }
+            (Some(_), Ok(b)) => Some(b),
+            (None, _) => None,
+        };
         let frame = build_analysis_frame(&raw_bars, frame_bars, inst_id, timeframe, None)
             .ok_or_else(|| anyhow!("not enough closed OKX candles to build {}-bar analysis", frame_bars))?;
 
@@ -1515,15 +1538,12 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         let raw = self.fetch_raw_candles(&symbol, &timeframe, 3).await.context("读取最新行情失败")?;
 
         if let Some(closed) = raw.iter().find(|b| b.closed) {
-            // Settle open shadow positions against the latest closed candle
-            let resolved_shadows = self.shadow_hook.match_bar(&symbol, closed);
-            for outcome in resolved_shadows {
-                let _ = self.outcome_store.save(&outcome);
-                let _ = self.hook_pipeline.read().run_post_outcome(&crate::learning::PostOutcomeContext { outcome: outcome.clone() });
-                if self.settings.read().learning.write_experience && outcome.qualified {
-                    let _ = self.experience_writer.record(&outcome);
-                }
-            }
+            // Settle open shadow positions against the latest closed candle.
+            // Shadow results are virtual: they stay inside the shadow hook for
+            // panel display only and must never reach the real drawdown
+            // breaker, the outcome store (learning metrics) or the experience
+            // library — a virtual loss must not halt real trading.
+            let _resolved_shadows = self.shadow_hook.match_bar(&symbol, closed);
 
             let key = (symbol.clone(), timeframe.clone());
             let last_ts = self.last_closed_ts.read().get(&key).copied().unwrap_or(0);
@@ -1688,6 +1708,8 @@ LEARNING_SHADOW_TRADING_ENABLED={}
         let typesafe_client = self.orchestrator.read().typesafe_client.clone();
 
         tokio::spawn(async move {
+            let mut config = config;
+            let mut used_synthetic_fallback = false;
             let jobs_map_cb = Arc::clone(&jobs_map);
             let jid_cb = jid.clone();
             let progress_cb = Arc::new(move |status: crate::backtest::types::BacktestJobStatus| {
@@ -1739,7 +1761,8 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                 match okx_res {
                     Ok(b) if b.len() >= 200 => Ok(b),
                     Ok(b) => {
-                        tracing::warn!("从 OKX 获取到 {} 根 K 线（不足 200 根预热要求），自动无缝切换为高质量仿真行情", b.len());
+                        tracing::warn!("从 OKX 获取到 {} 根 K 线（不足 200 根预热要求），自动切换为仿真行情", b.len());
+                        used_synthetic_fallback = true;
                         Ok(crate::backtest::generate_synthetic_candles_for_strategy(
                             &config.strategy_id,
                             synth_count,
@@ -1749,7 +1772,8 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                         ))
                     }
                     Err(err) => {
-                        tracing::warn!("OKX 历史行情获取失败 ({})，自动切换为高质量仿真行情以保证回测顺利完成", err);
+                        tracing::warn!("OKX 历史行情获取失败 ({})，自动切换为仿真行情以保证回测可运行", err);
+                        used_synthetic_fallback = true;
                         Ok(crate::backtest::generate_synthetic_candles_for_strategy(
                             &config.strategy_id,
                             synth_count,
@@ -1776,6 +1800,14 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                 }
             };
 
+            // A silent OKX→synthetic swap used to leave the report labelled
+            // "OkxApi": synthetic candles are strategy-shaped, so their metrics
+            // must never be mistakable for real history. Flip the config (which
+            // the report embeds) and say so in the job status.
+            if used_synthetic_fallback {
+                config.data_source = crate::backtest::BacktestDataSource::Synthetic;
+            }
+
             // 2. Run engine
             let mut engine = crate::backtest::BacktestEngine::new(config.clone(), cache, Some(Arc::new(ai_client)));
             if let Some(tc) = typesafe_client {
@@ -1786,7 +1818,11 @@ LEARNING_SHADOW_TRADING_ENABLED={}
                     if let Some(r) = jobs_map.write().get_mut(&jid) {
                         r.status.status = "completed".to_string();
                         r.status.progress_pct = 100.0;
-                        r.status.message = "回测完成".to_string();
+                        r.status.message = if used_synthetic_fallback {
+                            "回测完成（注意：OKX 行情不足/失败，本次使用合成仿真数据，结果不代表真实历史表现）".to_string()
+                        } else {
+                            "回测完成".to_string()
+                        };
                         r.status.completed_at_ms = Some(chrono::Utc::now().timestamp_millis());
                         r.report = Some(report);
                     }

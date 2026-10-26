@@ -201,6 +201,13 @@ impl BacktestEngine {
         });
 
         let mut last_progress_report = 0usize;
+        // Running peak maintained incrementally: re-folding the whole equity
+        // curve every bar made the main loop O(n²).
+        let mut peak_equity = account.initial_capital;
+        // Reusable newest-first history buffer: allocating a fresh reversed
+        // copy of the full prefix on every evaluated bar churned O(n) memory
+        // per bar.
+        let mut desc_buf: Vec<KlineBar> = Vec::new();
 
         let active_end_idx = if let Some(end_ts) = self.config.end_time_ms {
             bars_asc.iter().position(|b| b.ts_open > end_ts).unwrap_or(total_bars)
@@ -257,11 +264,11 @@ impl BacktestEngine {
             if account.position.is_none() && !account.is_liquidated {
                 // Slice past bars up to i, and reverse to newest-first format for snapshot frame builder
                 let history_slice = &bars_asc[..=i];
-                let mut raw_desc = history_slice.to_vec();
-                raw_desc.reverse();
+                desc_buf.clear();
+                desc_buf.extend(history_slice.iter().rev().cloned());
 
                 let frame_opt = build_analysis_frame(
-                    &raw_desc,
+                    &desc_buf,
                     50, // standard frame size
                     &self.config.symbol,
                     &self.config.timeframe,
@@ -421,7 +428,8 @@ impl BacktestEngine {
                                         debug!("Order rejected by account: {}", e);
                                     }
                                 } else {
-                                    // Queue Limit or Breakout order
+                                    // Queue Limit or Breakout order; live
+                                    // entries expire after max_pending_bars.
                                     matcher.add_pending_order(PendingOrder {
                                         signal_id,
                                         strategy_id: self.config.strategy_id.clone(),
@@ -433,7 +441,7 @@ impl BacktestEngine {
                                         take_profit: tp_px,
                                         contracts: lots,
                                         created_at_ms: current_bar.ts_open,
-                                        expiry_bars_remaining: 5,
+                                        expiry_bars_remaining: self.config.max_pending_bars.max(1),
                                     });
                                 }
                             }
@@ -444,10 +452,7 @@ impl BacktestEngine {
 
             // 4. Update equity curve point at bar close
             account.update_equity(current_bar.close);
-            let peak_equity = equity_curve
-                .iter()
-                .map(|p| p.equity)
-                .fold(account.initial_capital, f64::max);
+            peak_equity = peak_equity.max(account.equity);
             let current_equity = account.equity;
             let dd_pct = if peak_equity > 0.0 {
                 ((peak_equity - current_equity) / peak_equity * 100.0).max(0.0)
@@ -608,6 +613,7 @@ impl BacktestEngine {
                                 false,
                                 None,
                                 None,
+                                0,
                                 None,
                                 None,
                             );

@@ -61,6 +61,11 @@ pub struct BacktestConfig {
     #[serde(default = "default_max_hold_bars")]
     pub max_hold_bars: u32,
 
+    /// How many bars a pending limit/trigger entry stays alive before it is
+    /// cancelled, mirroring the live `max_pending_bars` executor setting.
+    #[serde(default = "default_max_pending_bars")]
+    pub max_pending_bars: u32,
+
     #[serde(default = "default_ct_val")]
     pub ct_val: f64,
 
@@ -98,6 +103,7 @@ fn default_maker_fee_rate() -> f64 { 0.0002 } // 0.02%
 fn default_slippage_rate() -> f64 { 0.0002 }  // 0.02%
 fn default_true() -> bool { true }
 fn default_max_hold_bars() -> u32 { 48 }
+fn default_max_pending_bars() -> u32 { 3 }
 fn default_ct_val() -> f64 { 0.01 }
 fn default_lot_sz() -> f64 { 1.0 }
 fn default_max_bars() -> usize { 2000 }
@@ -121,6 +127,7 @@ impl Default for BacktestConfig {
             use_mechanical_exit: true,
             use_cache: true,
             max_hold_bars: default_max_hold_bars(),
+            max_pending_bars: default_max_pending_bars(),
             ct_val: default_ct_val(),
             lot_sz: default_lot_sz(),
             data_source: BacktestDataSource::default(),

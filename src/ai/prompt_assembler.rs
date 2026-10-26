@@ -165,10 +165,12 @@ pub const STAGE2_OUTPUT_CONTRACT: &str = "\
 **思考过程与 JSON 内所有说明性文字必须使用简体中文**（仅 JSON 键名与规定枚举除外）。
 禁止用 markdown 代码围栏（不要写 ```json 或结尾的 ```），只输出裸 JSON 对象。
 重要规则：当 order_type 为“不下单”时，entry_price、take_profit_price、take_profit_price_2、stop_loss_price、order_direction 必须全部为 null。
+`action` 必填：开仓类订单（限价单/突破单/市价单）填 \"OPEN\"；观望/持有分别填 \"WAIT\"/\"HOLD\"；持仓管理时填对应管理动作，并在 `new_stop_loss_price` / `new_take_profit_price` 给出新价格。
 
 ```json
 {
   \"decision\": {
+    \"action\": \"OPEN|WAIT|HOLD|CLOSE_EARLY|MOVE_STOP_LOSS|MOVE_TAKE_PROFIT|MOVE_SL_TP\",
     \"order_direction\": \"做多|做空|null\",
     \"order_type\": \"限价单|突破单|市价单|不下单\",
     \"entry_price\": null,
@@ -178,6 +180,8 @@ pub const STAGE2_OUTPUT_CONTRACT: &str = "\
     \"take_profit_price\": null,
     \"take_profit_price_2\": null,
     \"stop_loss_price\": null,
+    \"new_stop_loss_price\": null,
+    \"new_take_profit_price\": null,
     \"reasoning\": \"\",
     \"diagnosis_confidence\": 75,
     \"trade_confidence\": 70,
@@ -719,8 +723,9 @@ pub struct Stage2PromptRequest<'a> {
 pub fn render_indicators_for_system(system: &str, frame: &KlineFrame) -> String {
     let canon = crate::strategies::canonical(system).unwrap_or("2pa_trend");
     match canon {
-        "dog_reversion" => {
-            // Dog walking only requires the deviation and SMA14/SMA170 table
+        // Both dog systems (reversion and trend) run on the SMA14/SMA170
+        // deviation table; only the price-action family wants EMA20.
+        "dog_reversion" | "dog_trend" => {
             render_dog_walking_kline_table(frame)
         }
         "adaptive" => {
@@ -749,6 +754,9 @@ pub fn build_stage2_prompt_with_strategy(
             false,
             None,
             req.experience_dir,
+            // The learning master switch gates this count: 0 entries means no
+            // injection, so the source path obeys the same opt-in contract.
+            req.experience_max_entries,
             req.position_context,
             req.htf_context,
         );
@@ -884,7 +892,9 @@ pub fn route_stage2_strategy_files(stage1_json: &Value, load_full_strategy_libra
     let pat_set: std::collections::HashSet<_> = patterns.into_iter().collect();
 
     let is_channel = matches!(cp.as_str(), "micro_channel" | "tight_channel" | "normal_channel" | "broad_channel" | "channel");
-    let is_range = matches!(cp.as_str(), "trading_range" | "trending_tr" | "range");
+    // extreme_tr is a legal stage1 enum: an extreme trading range is still a
+    // range and must load the range manual (it is the most dangerous chop).
+    let is_range = matches!(cp.as_str(), "trading_range" | "trending_tr" | "extreme_tr" | "range");
     let is_spike = matches!(cp.as_str(), "spike" | "trend");
 
     let mut files = Vec::new();
@@ -911,6 +921,13 @@ pub fn route_stage2_strategy_files(stage1_json: &Value, load_full_strategy_libra
             files.push("极速下跌交易策略.txt".to_string());
         }
     } else if is_range {
+        files.push("震荡区间分析识别.txt".to_string());
+        files.push("震荡区间交易策略.txt".to_string());
+    }
+    // Fallback: an unrecognised cycle (or spike with no direction) still gets
+    // the range manual — running with no cycle file at all silently degrades
+    // stage 2 into pattern overlays only.
+    if files.is_empty() {
         files.push("震荡区间分析识别.txt".to_string());
         files.push("震荡区间交易策略.txt".to_string());
     }
@@ -1084,6 +1101,7 @@ pub fn build_source_2pa_stage2_user_prompt(
     load_full_strategy_library: bool,
     prompt_dir: Option<&Path>,
     experience_dir: Option<&Path>,
+    experience_max_entries: usize,
     position_context: Option<&PositionContext>,
     htf_context: Option<&str>,
 ) -> (String, Vec<String>, Vec<ExperienceEntry>) {
@@ -1103,7 +1121,7 @@ pub fn build_source_2pa_stage2_user_prompt(
         &cycle,
         &direction,
         &patterns,
-        5,
+        experience_max_entries,
     );
     let experience_section = render_experience_section(&experiences);
 
@@ -1167,12 +1185,13 @@ pub fn build_source_2pa_stage2_messages(
     load_full_strategy_library: bool,
     prompt_dir: Option<&Path>,
     experience_dir: Option<&Path>,
+    experience_max_entries: usize,
     position_context: Option<&PositionContext>,
     htf_context: Option<&str>,
 ) -> (Vec<ChatMessage>, Vec<String>, Vec<ExperienceEntry>) {
     let (user_prompt, files, exps) = build_source_2pa_stage2_user_prompt(
         frame, stage1_json, decision_stance, load_full_strategy_library,
-        prompt_dir, experience_dir, position_context, htf_context,
+        prompt_dir, experience_dir, experience_max_entries, position_context, htf_context,
     );
     let messages = vec![
         ChatMessage {
@@ -1194,12 +1213,13 @@ pub fn build_source_2pa_stage2_prompt(
     load_full_strategy_library: bool,
     prompt_dir: Option<&Path>,
     experience_dir: Option<&Path>,
+    experience_max_entries: usize,
     position_context: Option<&PositionContext>,
     htf_context: Option<&str>,
 ) -> (String, Vec<String>, Vec<ExperienceEntry>) {
     let (user_prompt, files, exps) = build_source_2pa_stage2_user_prompt(
         frame, stage1_json, decision_stance, load_full_strategy_library,
-        prompt_dir, experience_dir, position_context, htf_context,
+        prompt_dir, experience_dir, experience_max_entries, position_context, htf_context,
     );
     let full_prompt = format!(
         "{}\n\n====================\n\n{}",
@@ -1233,7 +1253,7 @@ pub fn build_stage2_prompt_for_system(
     if canon == "2pa_source" {
         return build_source_2pa_stage2_prompt(
             frame, stage1_diagnosis, decision_stance, load_all_strategies,
-            prompt_dir, experience_dir, position_context, htf_context,
+            prompt_dir, experience_dir, 5, position_context, htf_context,
         );
     }
     let strategy = resolve_strategy_prompt_for_system(system, prompt_dir);
@@ -1404,6 +1424,13 @@ mod tests {
         assert!(dog_indicators.contains("SMA170 (主人)"));
         assert!(!dog_indicators.contains("微观几何特征"), "Dog walking prompt must not include PA geometry table");
 
+        // dog_trend runs on the same SMA14/SMA170 strategy text, so it must
+        // mount the dog table too (it used to fall into the EMA20 branch).
+        let dog_trend_indicators = render_indicators_for_system("dog_trend", &f);
+        assert!(dog_trend_indicators.contains("SMA14 (狗绳)"), "dog_trend prompt must include the dog table");
+        assert!(dog_trend_indicators.contains("SMA170 (主人)"));
+        assert!(!dog_trend_indicators.contains("微观几何特征"), "dog_trend prompt must not include PA geometry table");
+
         // Adaptive system mounts both
         let adaptive_indicators = render_indicators_for_system("adaptive", &f);
         assert!(adaptive_indicators.contains("EMA20"));
@@ -1425,7 +1452,7 @@ mod tests {
             "direction": "bullish",
             "detected_patterns": ["h2", "breakout_test"]
         });
-        let (s2_msgs, files, _) = build_source_2pa_stage2_messages(&f, &diag, "balanced", false, None, None, None, None);
+        let (s2_msgs, files, _) = build_source_2pa_stage2_messages(&f, &diag, "balanced", false, None, None, 0, None, None);
         assert_eq!(s2_msgs.len(), 2);
         assert!(files.contains(&"文件15-二次入场机会.txt".to_string()));
         assert!(files.contains(&"文件19-H1H2-L1L2计数.txt".to_string()));

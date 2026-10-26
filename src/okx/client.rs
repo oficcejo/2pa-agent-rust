@@ -2,12 +2,27 @@ use anyhow::{anyhow, Result};
 use base64::Engine;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
+use parking_lot::Mutex;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE, USER_AGENT};
 use serde_json::Value;
 use sha2::Sha256;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// The venue answered and definitively rejected the request (sCode != 0).
+///
+/// Transport-level failures (timeout, connection reset) stay plain `anyhow`
+/// errors: those leave the order state unknown. Callers downcast to this type
+/// to tell "certainly not placed" from "unknown", which decides whether a
+/// signal may be retried.
+#[derive(Debug, thiserror::Error)]
+#[error("{text}")]
+pub struct VenueRejected {
+    pub text: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct OKXCredentials {
@@ -36,6 +51,10 @@ pub struct OKXClient {
     credentials: Option<OKXCredentials>,
     demo_trading: bool,
     http: reqwest::Client,
+    /// Instrument specs (tickSz/lotSz/minSz) barely change; cache them per
+    /// instrument for a few minutes so every order placement does not pay an
+    /// extra REST round-trip.
+    instruments_cache: Arc<Mutex<HashMap<(String, String), (Instant, Vec<Value>)>>>,
 }
 
 impl OKXClient {
@@ -85,6 +104,7 @@ impl OKXClient {
             credentials,
             demo_trading,
             http,
+            instruments_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -260,13 +280,33 @@ impl OKXClient {
     }
 
     pub async fn get_instruments(&self, inst_type: &str, inst_id: Option<&str>) -> Result<Vec<Value>> {
+        // Specs (tickSz/lotSz/minSz) are effectively static; a short cache here
+        // removes one REST round-trip from every order placement and amend.
+        const TTL: Duration = Duration::from_secs(600);
+        let cache_key = (
+            inst_type.to_string(),
+            inst_id.unwrap_or("").to_string(),
+        );
+        if let Some((stamp, cached)) = self.instruments_cache.lock().get(&cache_key) {
+            if stamp.elapsed() < TTL && !cached.is_empty() {
+                return Ok(cached.clone());
+            }
+        }
         let mut params = vec![("instType", inst_type)];
         if let Some(id) = inst_id {
             if !id.is_empty() {
                 params.push(("instId", id));
             }
         }
-        self.request(reqwest::Method::GET, "/api/v5/public/instruments", Some(&params), None, false).await
+        let data = self
+            .request(reqwest::Method::GET, "/api/v5/public/instruments", Some(&params), None, false)
+            .await?;
+        if !data.is_empty() {
+            self.instruments_cache
+                .lock()
+                .insert(cache_key, (Instant::now(), data.clone()));
+        }
+        Ok(data)
     }
 
     pub async fn get_tickers(&self, inst_type: &str) -> Result<Vec<Value>> {
@@ -543,7 +583,9 @@ impl OKXClient {
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("OKX rejected order");
             let err_text = format_okx_trade_error("1", "All operations failed", s_code, s_msg);
-            return Err(anyhow!("{}", err_text));
+            // Typed error: the venue answered, so the order was definitively
+            // NOT placed and the caller may safely retry the signal.
+            return Err(anyhow::Error::new(VenueRejected { text: err_text }));
         }
         Ok(result)
     }
@@ -555,7 +597,7 @@ impl OKXClient {
         if s_code != "0" {
             let s_msg = result.get("sMsg").and_then(|v| v.as_str()).unwrap_or("OKX rejected algo order");
             let err_text = format_okx_trade_error("1", "All operations failed", s_code, s_msg);
-            return Err(anyhow!("{}", err_text));
+            return Err(anyhow::Error::new(VenueRejected { text: err_text }));
         }
         Ok(result)
     }
@@ -615,7 +657,18 @@ impl OKXClient {
         Ok(result)
     }
 
-    pub async fn amend_algo_order(&self, inst_id: &str, algo_id: &str, new_sl: Option<f64>, new_tp: Option<f64>) -> Result<Value> {
+    /// Amend an attached SL/TP algo order.
+    ///
+    /// Prices must arrive already snapped to the instrument tick as `Decimal`;
+    /// stringifying an f64 here is what used to send `0.30000000000000004`
+    /// style values that OKX rejects for exceeding tickSz precision.
+    pub async fn amend_algo_order(
+        &self,
+        inst_id: &str,
+        algo_id: &str,
+        new_sl: Option<rust_decimal::Decimal>,
+        new_tp: Option<rust_decimal::Decimal>,
+    ) -> Result<Value> {
         let mut payload = serde_json::json!({
             "instId": inst_id,
             "algoId": algo_id,

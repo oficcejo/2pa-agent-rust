@@ -1,13 +1,18 @@
 /// Mask API key or secret token for safe logging/display.
+///
+/// Operates on characters, not bytes: slicing at a fixed byte index panics on
+/// multibyte input (a passphrase containing Chinese, for example).
 pub fn mask_secret(secret: &str) -> String {
     let s = secret.trim();
     if s.is_empty() {
         return "".to_string();
     }
-    if s.len() <= 6 {
+    if s.chars().count() <= 6 {
         return "***".to_string();
     }
-    format!("{}***{}", &s[..3], &s[s.len() - 3..])
+    let head: String = s.chars().take(3).collect();
+    let tail: String = s.chars().skip(s.chars().count() - 3).collect();
+    format!("{}***{}", head, tail)
 }
 
 /// Replace known secrets in free-form error text.

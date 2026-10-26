@@ -59,8 +59,21 @@ pub fn save_record(dir: &Path, record: &AnalysisRecord) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Delete a decision record by id.
+///
+/// The id arrives from a URL path segment and percent-decoding can reintroduce
+/// `/` and `..`, so anything but a plain file-stem-safe id is rejected before
+/// it is ever joined onto a directory.
 pub fn delete_record(dir: &Path, record_id: &str) -> bool {
-    let target = format!("{}.json", record_id.trim_end_matches(".json"));
+    let id = record_id.trim().trim_end_matches(".json");
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return false;
+    }
+    let target = format!("{}.json", id);
     let path1 = dir.join(&target);
     let path2 = dir.join("pending").join(&target);
     let mut deleted = false;

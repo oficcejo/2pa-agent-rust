@@ -112,16 +112,31 @@ pub struct TypeSafeAnswer {
 }
 
 impl TypeSafeAnswer {
-    /// Return the confidence value, or infer from Noul probability distance to 0.5 if not present.
+    /// Return the confidence value, or infer it from the answer shape.
+    ///
+    /// For a Choice answer the noul field is absent, so a missing explicit
+    /// confidence used to return a hard 0.0 and permanently slam the gate
+    /// shut; derive it from the distribution's peakedness instead (max minus
+    /// runner-up probability).
     pub fn effective_confidence(&self) -> f64 {
         if let Some(conf) = self.confidence {
-            conf
-        } else if let Some(p) = self.noul {
-            // For Noul: 0.5 is maximum uncertainty (conf = 0.0), 1.0 or 0.0 is maximum certainty (conf = 1.0)
-            (p - 0.5).abs() * 2.0
-        } else {
-            0.0
+            return conf;
         }
+        if let Some(p) = self.noul {
+            // For Noul: 0.5 is maximum uncertainty (conf = 0.0), 1.0 or 0.0 is maximum certainty (conf = 1.0)
+            return (p - 0.5).abs() * 2.0;
+        }
+        if let Some(probs) = &self.probabilities {
+            let mut values: Vec<f64> = probs.values().copied().filter(|v| v.is_finite()).collect();
+            values.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            if values.len() >= 2 {
+                return (values[0] - values[1]).clamp(0.0, 1.0);
+            }
+            if let Some(&only) = values.first() {
+                return only.clamp(0.0, 1.0);
+            }
+        }
+        0.0
     }
 }
 
@@ -183,7 +198,9 @@ impl TypeSafeClient {
             }
         }
 
-        let http = builder.build().unwrap_or_default();
+        // A default reqwest::Client carries no timeout and no auth headers:
+        // failing to build must be loud, not a silent degraded client.
+        let http = builder.build().expect("HTTP client 初始化失败");
 
         Self {
             model: if model.trim().is_empty() {

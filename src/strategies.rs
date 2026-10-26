@@ -18,7 +18,10 @@ pub const TAKER_FEE_DERIVATIVE: f64 = 0.0005;
 pub const TAKER_FEE_SPOT: f64 = 0.0010;
 
 pub fn is_derivative(symbol: &str) -> bool {
-    symbol.ends_with("-SWAP") || symbol.split('-').count() >= 4
+    matches!(
+        crate::okx::trading::classify_instrument(symbol),
+        "SWAP" | "FUTURES"
+    )
 }
 
 /// One-side taker fee, excluding slippage.
@@ -206,7 +209,10 @@ pub fn evidence(
             } else {
                 b[..=2.min(b.len() - 1)].iter().map(|x| x.high).fold(f64::NEG_INFINITY, f64::max)
             };
-            let prior_extreme = b[2..=10.min(b.len() - 1)]
+            // The prior window starts one bar later so it never shares a bar
+            // with the recent window: when b[2] itself is the extreme, the old
+            // overlap made |recent - prior| trivially 0 and the check toothless.
+            let prior_extreme = b[3..=10.min(b.len() - 1)]
                 .iter()
                 .map(|x| if sign > 0.0 { x.low } else { -x.high })
                 .fold(f64::INFINITY, f64::min)

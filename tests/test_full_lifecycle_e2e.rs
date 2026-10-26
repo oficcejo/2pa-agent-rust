@@ -497,11 +497,11 @@ async fn test_phase4_position_tracking_and_closing() {
 
     // 4.2 SL tightening validation
     // Tighten stop from 98.0 to 101.0 (below mark price 103.0): Valid!
-    assert!(validate_stop_change(&pos_ctx, 101.0).is_ok());
+    assert!(validate_stop_change(&pos_ctx, 101.0, None).is_ok());
     // Widen stop from 98.0 to 96.0: Rejected!
-    assert!(validate_stop_change(&pos_ctx, 96.0).is_err());
+    assert!(validate_stop_change(&pos_ctx, 96.0, None).is_err());
     // Move stop above mark price 103.0: Rejected!
-    assert!(validate_stop_change(&pos_ctx, 104.0).is_err());
+    assert!(validate_stop_change(&pos_ctx, 104.0, None).is_err());
 
     // Execute Move SL via execute_management
     let move_sl_decision = json!({

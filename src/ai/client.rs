@@ -74,7 +74,9 @@ impl AIClient {
             }
         }
 
-        let http = builder.build().unwrap_or_default();
+        // A default reqwest::Client carries no timeout and no auth headers:
+        // failing to build must be loud, not a silent degraded client.
+        let http = builder.build().expect("HTTP client 初始化失败");
 
         Self {
             model: model.trim().to_string(),

@@ -204,9 +204,9 @@ fn normalized_position_and_trailing_stop_handle_both_modes() {
         mark_px: Some(100.0),
         ..Default::default()
     };
-    assert!(validate_stop_change(&pos, 97.0).is_ok());
+    assert!(validate_stop_change(&pos, 97.0, None).is_ok());
     for sl in [94.0, 100.0, f64::NAN] {
-        assert!(validate_stop_change(&pos, sl).is_err());
+        assert!(validate_stop_change(&pos, sl, None).is_err());
     }
     assert_eq!(
         position_side(&json!({"pos":"-2","posSide":"net"})).unwrap(),

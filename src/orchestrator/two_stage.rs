@@ -178,7 +178,13 @@ impl TwoStageOrchestrator {
         let (mut stage2_decision, stage2_reply, stage2_messages) = call_and_validate_stage2(
             &self.ai_client,
             &stage2_prompt,
-            self.settings.validation.retry_max,
+            // retry_stage2=false used to be a dead setting; honour it by
+            // collapsing the retry budget to zero for the decision stage.
+            if self.settings.validation.retry_stage2 {
+                self.settings.validation.retry_max
+            } else {
+                0
+            },
             Some(&stage1_diagnosis),
         ).await.context("第二阶段交易决策失败")?;
 

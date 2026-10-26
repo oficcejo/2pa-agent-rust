@@ -202,10 +202,14 @@ pub struct ShadowPosition {
     pub shadow_id: String,
     pub symbol: String,
     pub side: String,
+    pub timeframe: String,
     pub entry_price: f64,
     pub stop_loss: f64,
     pub take_profit: f64,
     pub entry_ts: i64,
+    /// Open time of the last bar this position was already matched against,
+    /// so repeated polls over the same closed bar cannot double-count.
+    pub last_matched_ts: i64,
     pub hold_bars: u32,
     pub max_favorable_px: f64,
     pub max_adverse_px: f64,
@@ -240,12 +244,27 @@ impl ShadowTradingHook {
         self.closed_outcomes.read().clone()
     }
 
-    /// Match open shadow positions against incoming market bars.
+    /// Match open shadow positions against an incoming *closed* bar.
+    ///
+    /// Callers poll every few seconds and hand over the same closed bar until
+    /// the next one closes, so each position tracks the newest bar open time it
+    /// has already been matched against. Bars that opened before the shadow
+    /// entry are skipped entirely: their high/low happened before the virtual
+    /// fill and would be lookahead.
     pub fn match_bar(&self, symbol: &str, bar: &KlineBar) -> Vec<TradeOutcome> {
         let mut resolved = Vec::new();
         let mut positions = self.active_positions.write();
 
         for pos in positions.iter_mut().filter(|p| p.active && p.symbol == symbol) {
+            if bar.ts_open <= pos.last_matched_ts {
+                continue;
+            }
+            pos.last_matched_ts = bar.ts_open;
+            if bar.ts_open < pos.entry_ts {
+                // The bar closed before this position existed: no post-entry
+                // price action in it yet.
+                continue;
+            }
             pos.hold_bars += 1;
             let is_long = pos.side == "long";
 
@@ -300,7 +319,7 @@ impl ShadowTradingHook {
                     prompt_version: "shadow_candidate".to_string(),
                     prompt_hash: "shadow".to_string(),
                     symbol: pos.symbol.clone(),
-                    timeframe: "15m".to_string(),
+                    timeframe: pos.timeframe.clone(),
                     side: pos.side.clone(),
                     cycle_position: "shadow".to_string(),
                     detected_patterns: vec!["shadow_virtual".to_string()],
@@ -319,8 +338,10 @@ impl ShadowTradingHook {
                     mae_r: mae_r.max(0.0),
                     hold_bars: pos.hold_bars,
                     exit_reason: reason.as_str().to_string(),
-                    qualified: true,
-                    qualification_reason: "影子交易虚拟撮合完成".to_string(),
+                    // Shadow fills are virtual: they never count as qualified
+                    // samples for metrics, the experience library or gates.
+                    qualified: false,
+                    qualification_reason: "影子交易虚拟撮合（不参与资格判定）".to_string(),
                     created_ms: pos.entry_ts,
                     resolved_ms: bar.ts_open,
                 };
@@ -342,11 +363,23 @@ impl TradingHook for ShadowTradingHook {
 
     fn pre_execution(&self, ctx: &PreExecutionContext) -> Result<HookAction, HookRejection> {
         if ctx.is_shadow_mode {
-            let shadow_id = uuid::Uuid::new_v4().simple().to_string();
             let parse_px = |v: Option<&serde_json::Value>| {
                 v.and_then(|x| x.as_f64().or_else(|| x.as_str().and_then(|s| s.parse::<f64>().ok())))
+                    .filter(|p| p.is_finite() && *p > 0.0)
             };
-            let entry_px = parse_px(ctx.decision.get("entry_price")).unwrap_or(100.0);
+            let entry_px = parse_px(ctx.decision.get("entry_price"));
+            let sl_px = parse_px(ctx.decision.get("stop_loss_price"));
+            let tp_px = parse_px(ctx.decision.get("take_profit_price"));
+            // A shadow position without real prices would fabricate a phantom
+            // fill (the old fallback of 100.0) and poison every stat it feeds.
+            let (entry_px, sl_px, tp_px) = match (entry_px, sl_px, tp_px) {
+                (Some(e), Some(s), Some(t)) => (e, s, t),
+                _ => {
+                    return Ok(HookAction::Skip(
+                        "影子拦截需要有效的 entry/stop/take_profit 价格，缺少价格已跳过（不下单也不建虚拟仓）".to_string(),
+                    ));
+                }
+            };
             let side = ctx
                 .decision
                 .get("order_direction")
@@ -360,20 +393,18 @@ impl TradingHook for ShadowTradingHook {
                     }
                 })
                 .unwrap_or("long");
-            let is_short = side == "short";
-            let default_sl = if is_short { entry_px * 1.01 } else { entry_px * 0.99 };
-            let default_tp = if is_short { entry_px * 0.98 } else { entry_px * 1.02 };
-            let sl_px = parse_px(ctx.decision.get("stop_loss_price")).unwrap_or(default_sl);
-            let tp_px = parse_px(ctx.decision.get("take_profit_price")).unwrap_or(default_tp);
 
+            let shadow_id = uuid::Uuid::new_v4().simple().to_string();
             self.active_positions.write().push(ShadowPosition {
                 shadow_id: shadow_id.clone(),
                 symbol: ctx.symbol.clone(),
                 side: side.to_string(),
+                timeframe: ctx.timeframe.clone(),
                 entry_price: entry_px,
                 stop_loss: sl_px,
                 take_profit: tp_px,
                 entry_ts: chrono::Utc::now().timestamp_millis(),
+                last_matched_ts: 0,
                 hold_bars: 0,
                 max_favorable_px: entry_px,
                 max_adverse_px: entry_px,

@@ -8,7 +8,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -20,6 +20,39 @@ use uuid::Uuid;
 pub const BROKER_TAG: &str = "c314b0aecb5bBCDE";
 
 pub const PA_CLIENT_ORDER_PREFIX: &str = "pa";
+
+/// Snap a price onto the exchange tick grid with exact decimal arithmetic.
+///
+/// Doing this in f64 (`(v / tick).round() * tick`) produces values like
+/// `0.30000000000000004` whose `to_string()` exceeds the instrument's tick
+/// precision; OKX then rejects the amend/submit with a parameter error. Every
+/// price that is stringified for the venue must go through here.
+pub fn round_tick_decimal(value: Decimal, tick: Decimal) -> Decimal {
+    if tick <= Decimal::ZERO { return value; }
+    (value / tick).round() * tick
+}
+
+/// OKX instrument family derived from the instId spelling.
+///
+/// Dated futures (`BTC-USDT-240329`) have the same three segments as a spot
+/// pair, so the third segment must be checked for a 6-digit date; options carry
+/// at least four segments.
+pub fn classify_instrument(inst_id: &str) -> &'static str {
+    let id = inst_id.trim();
+    let parts: Vec<&str> = id.split('-').collect();
+    if parts.len() >= 4 {
+        "OPTION"
+    } else if id.ends_with("-SWAP") {
+        "SWAP"
+    } else if parts.len() == 3
+        && parts[2].len() == 6
+        && parts[2].chars().all(|c| c.is_ascii_digit())
+    {
+        "FUTURES"
+    } else {
+        "SPOT"
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionResult {
@@ -88,7 +121,9 @@ pub struct OKXTradeExecutor {
     max_signal_age_seconds: u64,
     pub max_pending_bars: usize,
     audit_path: Option<PathBuf>,
-    seen: Arc<Mutex<HashSet<String>>>,
+    /// Signals already acted on, mapped to when they were recorded. Timestamps
+    /// let long-running processes prune entries instead of growing forever.
+    seen: Arc<Mutex<HashMap<String, i64>>>,
     audit_lock: Arc<ReentrantMutex<()>>,
     execution_lock: Arc<tokio::sync::Mutex<()>>,
     pub auto_order_sizing: bool,
@@ -128,7 +163,7 @@ impl OKXTradeExecutor {
             max_signal_age_seconds: max_signal_age_seconds.max(5),
             max_pending_bars: max_pending_bars.max(1),
             audit_path,
-            seen: Arc::new(Mutex::new(HashSet::new())),
+            seen: Arc::new(Mutex::new(HashMap::new())),
             audit_lock: Arc::new(ReentrantMutex::new(())),
             execution_lock: Arc::new(tokio::sync::Mutex::new(())),
             auto_order_sizing,
@@ -144,13 +179,14 @@ impl OKXTradeExecutor {
             if path.is_file() {
                 if let Ok(file) = File::open(path) {
                     let reader = BufReader::new(file);
+                    let now = now_local_ms();
                     let mut seen = self.seen.lock();
                     for line in reader.lines().flatten() {
                         if let Ok(val) = serde_json::from_str::<Value>(&line) {
                             if val.get("submitted").and_then(|v| v.as_bool()).unwrap_or(false)
                                 || val["error_code"] == "SUBMISSION_UNCONFIRMED" {
                                 if let Some(sig) = val.get("signal_id").and_then(|v| v.as_str()) {
-                                    seen.insert(sig.to_string());
+                                    seen.insert(sig.to_string(), now);
                                 }
                             }
                         }
@@ -158,6 +194,18 @@ impl OKXTradeExecutor {
                 }
             }
         }
+    }
+
+    /// Record a signal as acted on. Prunes stale entries occasionally so the
+    /// map stays bounded on long-running deployments.
+    fn mark_seen(&self, signal_id: &str) {
+        const PRUNE_AFTER_MS: i64 = 7 * 24 * 3600 * 1000;
+        let now = now_local_ms();
+        let mut seen = self.seen.lock();
+        if seen.len() > 4096 {
+            seen.retain(|_, ts| now.saturating_sub(*ts) < PRUNE_AFTER_MS);
+        }
+        seen.insert(signal_id.to_string(), now);
     }
 
     pub fn generate_signal_id(
@@ -455,8 +503,7 @@ impl OKXTradeExecutor {
     }
 
     fn round_tick(value: Decimal, tick: Decimal) -> Decimal {
-        if tick <= Decimal::ZERO { return value; }
-        (value / tick).round() * tick
+        round_tick_decimal(value, tick)
     }
 
     pub async fn compute_order_size(
@@ -498,8 +545,11 @@ impl OKXTradeExecutor {
         let fees = ct_val * (entry + stop.max(entry)) * fee_rate;
         let margin_per_unit = notional / lev + fees;
         let risk_per_unit = (entry - stop).abs() * ct_val + fees;
-        let risk_budget = total * self.risk_percent.clamp(Decimal::new(1,1), Decimal::from(20)) / Decimal::from(100);
-        let margin_budget = available * self.max_margin_percent.clamp(Decimal::ONE, Decimal::from(100)) / Decimal::from(100);
+        // Lower bounds are 0 on purpose: a user asking for tighter risk must
+        // never be silently bumped UP to a riskier default; only the sane
+        // upper caps are enforced.
+        let risk_budget = total * self.risk_percent.clamp(Decimal::ZERO, Decimal::from(20)) / Decimal::from(100);
+        let margin_budget = available * self.max_margin_percent.clamp(Decimal::ZERO, Decimal::from(100)) / Decimal::from(100);
         let max_size = (risk_budget / risk_per_unit).min(margin_budget / margin_per_unit);
         let target = if self.auto_order_sizing { max_size } else { self.default_order_size.min(max_size) };
         let size = Self::floor_step(target, lot_sz);
@@ -521,7 +571,15 @@ impl OKXTradeExecutor {
             anyhow::ensure!(action == "OPEN" || action.is_empty(), "开仓订单类型与 action 冲突，拒绝执行");
         }
 
-        let confidence = decision.get("trade_confidence").or_else(|| decision.get("confidence")).and_then(|v| v.as_u64()).filter(|v| *v <= 100).unwrap_or(0) as u32;
+        // Confidence may legitimately arrive as 78.5 or "78"; as_u64() alone
+        // used to silently turn those into 0 and reject valid orders.
+        let confidence = decision
+            .get("trade_confidence")
+            .or_else(|| decision.get("confidence"))
+            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok())))
+            .filter(|v| v.is_finite())
+            .map(|v| v.round().clamp(0.0, 100.0) as u32)
+            .unwrap_or(0);
         if confidence > 100 || confidence < self.confidence_threshold {
             return Err(anyhow!("交易信心度 {}% 低于设定风控门槛 {}%", confidence, self.confidence_threshold));
         }
@@ -536,14 +594,11 @@ impl OKXTradeExecutor {
             (entry, stop, target) = self.validate_prices(&current)?;
         }
 
-        // Query instrument specs from OKX
-        let inst_type = if inst_id.ends_with("-SWAP") {
-            "SWAP"
-        } else if inst_id.split('-').count() >= 4 {
-            "FUTURES"
-        } else {
-            "SPOT"
-        };
+        // Query instrument specs from OKX (options are out of scope for the
+        // sizing/risk model; dated futures carry a 6-digit date segment).
+        let inst_class = classify_instrument(inst_id);
+        anyhow::ensure!(inst_class != "OPTION", "暂不支持期权品种: {}", inst_id);
+        let inst_type = inst_class;
 
         let insts = self.client.get_instruments(inst_type, Some(inst_id)).await?;
         let instrument = insts.into_iter().next().ok_or_else(|| anyhow!("未找到 OKX 合约/产品规格: {}", inst_id))?;
@@ -620,6 +675,12 @@ impl OKXTradeExecutor {
         }
 
         let direction = decision.get("order_direction").and_then(|v| v.as_str()).unwrap_or("");
+        // Spot has no short: a "sell" market order would dump the user's
+        // existing spot holding while the SL/TP semantics (buy back) belong to
+        // an entirely different strategy intent.
+        if inst_type == "SPOT" {
+            anyhow::ensure!(direction == "做多", "现货品种 {} 不支持做空信号（做空会卖出现有现货持仓），拒绝执行", inst_id);
+        }
         let side = if direction == "做多" { "buy" } else { "sell" };
         let td_mode = if inst_type == "SPOT" && self.trade_mode == "cash" { "cash" } else { &self.trade_mode };
 
@@ -764,7 +825,7 @@ impl OKXTradeExecutor {
 
         {
             let seen = self.seen.lock();
-            if seen.contains(&signal_id) {
+            if seen.contains_key(&signal_id) {
                 return ExecutionResult {
                     submitted: false,
                     signal_id: signal_id.clone(),
@@ -795,7 +856,13 @@ impl OKXTradeExecutor {
         };
 
         let prepared: Result<()> = async {
-            let is_derivative = inst_id.ends_with("-SWAP") || inst_id.split('-').count() >= 4;
+            // Cheap freshness gate FIRST: everything below destructively
+            // cancels this program's old pending entries, and doing that only
+            // to fail the age check afterwards would leave the account with
+            // neither the old entry nor a new one.
+            anyhow::ensure!(now_local_ms() - bar_close_ts_ms <= (self.max_signal_age_seconds as i64) * 1000,
+                "信号已过期，停止执行（未撤任何旧挂单）");
+            let is_derivative = matches!(classify_instrument(inst_id), "SWAP" | "FUTURES");
             if is_derivative {
                 let positions = self.client.get_positions(Some(inst_id)).await?;
                 for pos in positions {
@@ -819,7 +886,7 @@ impl OKXTradeExecutor {
             }
             for old in self.client.get_pending_algo_orders(Some(inst_id), "trigger").await? {
                 if !crate::web::positions::owned_order(&old) { continue; }
-                let id = old["algoId"].as_str().ok_or_else(|| anyhow!("旧策略单缺少 ID"))?;
+                let id = old["algoId"].as_str().ok_or_else(|| anyhow!("旧策略单缺少订单 ID"))?;
                 self.client.cancel_algo_order(inst_id, id).await?;
                 let state = self.client.get_algo_order(Some(id), None).await?;
                 anyhow::ensure!(state["state"] == "canceled", "旧策略单撤销尚未确认，暂停替换");
@@ -842,7 +909,7 @@ impl OKXTradeExecutor {
         }
 
         // A timeout is not proof of rejection. Never retry the same signal blindly.
-        self.seen.lock().insert(signal_id.clone());
+        self.mark_seen(&signal_id);
         // Place order
         let order_res = if is_algo {
             self.client.place_algo_order(&request).await
@@ -852,10 +919,6 @@ impl OKXTradeExecutor {
 
         match order_res {
             Ok(resp) => {
-                {
-                    let mut seen = self.seen.lock();
-                    seen.insert(signal_id.clone());
-                }
                 let res = ExecutionResult {
                     submitted: true,
                     signal_id: signal_id.clone(),
@@ -869,17 +932,68 @@ impl OKXTradeExecutor {
                 res
             }
             Err(e) => {
-                let res = ExecutionResult {
-                    submitted: false,
-                    signal_id: signal_id.clone(),
-                    request: request.clone(),
-                    response: None,
-                    reason: e.to_string(),
-                    error_code: "SUBMISSION_UNCONFIRMED".into(),
-                    broker_tag: BROKER_TAG.to_string(),
+                if e.downcast_ref::<crate::okx::client::VenueRejected>().is_some() {
+                    // The venue answered and rejected the request: the order was
+                    // definitely never placed, so release the signal instead of
+                    // permanently burying it (it may be resubmitted while still
+                    // fresh, e.g. after a balance top-up).
+                    self.seen.lock().remove(&signal_id);
+                    let res = ExecutionResult {
+                        submitted: false,
+                        signal_id: signal_id.clone(),
+                        request: request.clone(),
+                        response: None,
+                        reason: e.to_string(),
+                        error_code: "VENUE_REJECTED".into(),
+                        broker_tag: BROKER_TAG.to_string(),
+                    };
+                    self.audit(&res, inst_id, timeframe, decision);
+                    return res;
+                }
+
+                // Transport-level failure: the order state is unknown. Look the
+                // client order id up — if the venue has it, the submission in
+                // fact succeeded and must be tracked; only a confirmed absence
+                // keeps the signal retryable-conservative.
+                let cl_id = request
+                    .get("algoClOrdId")
+                    .or_else(|| request.get("clOrdId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let lookup = if is_algo {
+                    self.client.get_algo_order(None, Some(&cl_id)).await
+                } else {
+                    self.client.get_order(inst_id, None, Some(&cl_id)).await
                 };
-                self.audit(&res, inst_id, timeframe, decision);
-                res
+                match lookup {
+                    Ok(found) => {
+                        let res = ExecutionResult {
+                            submitted: true,
+                            signal_id: signal_id.clone(),
+                            request: request.clone(),
+                            response: Some(found),
+                            reason: format!("下单响应异常，但按客户单号 {} 查询确认订单已存在于交易所。原始错误: {}", cl_id, e),
+                            error_code: String::new(),
+                            broker_tag: BROKER_TAG.to_string(),
+                        };
+                        self.audit(&res, inst_id, timeframe, decision);
+                        res
+                    }
+                    Err(_) => {
+                        let res = ExecutionResult {
+                            submitted: false,
+                            signal_id: signal_id.clone(),
+                            request: request.clone(),
+                            response: None,
+                            reason: format!("{}（按客户单号 {} 复查未确认订单存在，保守标记为状态未知，本信号不再重试）", e, cl_id),
+                            error_code: "SUBMISSION_UNCONFIRMED".into(),
+                            broker_tag: BROKER_TAG.to_string(),
+                        };
+                        self.audit(&res, inst_id, timeframe, decision);
+                        res
+                    }
+                }
             }
         }
     }

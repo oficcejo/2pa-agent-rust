@@ -38,12 +38,32 @@ pub struct ValidationError {
 }
 
 pub fn strip_markdown_fences(text: &str) -> String {
-    let without_think = re_think().replace_all(text, "");
-    let t = without_think.trim();
-    if let Some(caps) = re_fenced().captures(t) {
-        if let Some(m) = caps.get(1) {
-            return m.as_str().trim().to_string();
+    // An unterminated <think> block (truncated output) would otherwise leave
+    // the model's reasoning prose in front of the JSON; drop everything up to
+    // the last opening tag so extraction starts at post-thinking content.
+    let without_think = if text.contains("<think>") && !text.contains("</think>") {
+        match text.rfind("<think>") {
+            Some(pos) => &text[pos + "<think>".len()..],
+            None => text,
         }
+    } else {
+        text
+    };
+    let without_think = re_think().replace_all(without_think, "");
+    let t = without_think.trim();
+    // Models sometimes emit a fenced example first and the real payload last;
+    // picking the first block used to capture the example. Prefer the last
+    // fenced block that looks like a JSON object, falling back to the first
+    // block for array-topped payloads.
+    let json_blocks: Vec<&str> = re_fenced()
+        .captures_iter(t)
+        .filter_map(|c| c.get(1).map(|m| m.as_str().trim()))
+        .collect();
+    if let Some(b) = json_blocks.iter().rev().find(|b| b.starts_with('{')) {
+        return b.to_string();
+    }
+    if let Some(first) = json_blocks.first() {
+        return first.to_string();
     }
     let without_leading = re_leading_fence().replace(t, "");
     let without_trailing = re_trailing_fence().replace(&without_leading, "");
@@ -456,6 +476,26 @@ pub fn validate_stage1_json(val: &Value, raw_text: &str) -> Result<Value, Valida
                 }
             ),
         });
+    }
+
+    // Normalise enum-ish values the downstream code compares exactly. The
+    // enforce layer gates on gate_result == "proceed" (case-sensitive); a model
+    // answering "PROCEED"/"Proceed" used to pass this soft check and then get
+    // silently rewritten to WAIT further down with no retry feedback.
+    if let Some(gate) = obj_map.get("gate_result").and_then(Value::as_str) {
+        let normalised = gate.trim().to_lowercase();
+        if !matches!(normalised.as_str(), "proceed" | "wait" | "unknown") {
+            return Err(ValidationError {
+                category: "c".to_string(),
+                stage: "stage1".to_string(),
+                raw_text: raw_text.to_string(),
+                parse_position: None,
+                missing_fields: Vec::new(),
+                invalid_fields: vec!["gate_result".to_string()],
+                message: format!("gate_result 必须是 proceed/wait/unknown 之一，收到: {gate:?}"),
+            });
+        }
+        obj_map.insert("gate_result".to_string(), Value::String(normalised));
     }
 
     // Return a repaired object with recovered aliases applied.

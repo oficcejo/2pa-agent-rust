@@ -60,8 +60,14 @@ impl OrderMatcher {
 
         for mut order in self.pending_orders.drain(..) {
             if account.position.is_some() || account.is_liquidated {
-                // Cannot open another position if already in position
-                still_pending.push(order);
+                // Cannot open another position if already in position, but the
+                // order must keep ageing: freezing expiry while a position
+                // holds let a signal from many bars back fill right after the
+                // position closed — far more permissive than the live executor.
+                order.expiry_bars_remaining = order.expiry_bars_remaining.saturating_sub(1);
+                if order.expiry_bars_remaining > 0 {
+                    still_pending.push(order);
+                }
                 continue;
             }
 

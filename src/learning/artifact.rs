@@ -209,8 +209,13 @@ impl PromptArtifactStore {
     /// Revert to the previously published version, if one exists.
     pub fn rollback(&self, name: &str) -> Result<Option<ActivePrompt>> {
         let index = self.read_index(name);
+        // Numeric order: lexicographic sorting puts "v10" before "v2", which
+        // silently scrambled rollback order once ten versions accumulated.
+        let version_key = |v: &str| -> (usize, String) {
+            (v.trim_start_matches('v').parse::<usize>().unwrap_or(0), v.to_string())
+        };
         let mut versions: Vec<&String> = index.versions.keys().collect();
-        versions.sort();
+        versions.sort_by_key(|v| version_key(v));
         let Some(pos) = versions.iter().position(|v| **v == index.active) else {
             return Ok(None);
         };

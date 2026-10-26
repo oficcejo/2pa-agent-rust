@@ -379,14 +379,20 @@ impl Default for OKXSettings {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Web 鉴权默认开启：交易接口可以直接驱动真实下单，安全默认值必须是
+/// 「需要登录」，显式配置 `WEB_AUTH_ENABLED=false` 才允许关闭。
+fn default_web_auth_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default, skip_serializing)]
     pub web_auth_token: String,
-    /// Web 登录口令鉴权开关。默认 `false`（免登录，直接访问全部接口）；
-    /// 设为 `true`（配置 `web_auth_enabled` 或环境变量 `WEB_AUTH_ENABLED=true`）后
-    /// 恢复 `authenticate` 中间件的 Bearer/Basic 校验与跨站写请求拦截。
-    #[serde(default)]
+    /// Web 登录口令鉴权开关。默认 `true`（Bearer/Basic 校验 + 跨站写请求拦截）；
+    /// 显式配置 `WEB_AUTH_ENABLED=false`（或 settings.json 中 `web_auth_enabled=false`）
+    /// 才会免登录。绑定非回环地址且关闭鉴权时服务拒绝启动。
+    #[serde(default = "default_web_auth_enabled")]
     pub web_auth_enabled: bool,
     #[serde(default)]
     pub provider: AIProviderSettings,
@@ -404,13 +410,30 @@ pub struct Settings {
     pub typesafe: TypeSafeSettings,
 }
 
+impl Default for Settings {
+    fn default() -> Self {
+        // Route through serde so the no-file path and the field defaults stay
+        // in lockstep; `{}` deserializes because every field carries a default.
+        serde_json::from_str("{}").expect("Settings 字段默认值不变式被破坏")
+    }
+}
+
 impl Settings {
     pub fn load_from_file_and_env<P: AsRef<Path>>(path: P) -> Self {
         let _ = dotenvy::dotenv();
 
         let mut settings = if path.as_ref().exists() {
             match std::fs::read_to_string(&path) {
-                Ok(content) => serde_json::from_str::<Settings>(&content).unwrap_or_default(),
+                Ok(content) => serde_json::from_str::<Settings>(&content).unwrap_or_else(|e| {
+                    // Corrupt config must never silently degrade security: the
+                    // fallback keeps web auth ON and says so loudly.
+                    tracing::error!(
+                        "settings.json 解析失败（{}），已回退到安全默认值（Web 鉴权保持开启）。请修复 {}",
+                        e,
+                        path.as_ref().display()
+                    );
+                    Settings::default()
+                }),
                 Err(_) => Settings::default(),
             }
         } else {
