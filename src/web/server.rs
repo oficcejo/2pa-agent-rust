@@ -7,7 +7,7 @@ use axum::Router;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Wildcard and loopback bindings are the only addresses where serving an
 /// unauthenticated trading console is acceptable.
@@ -72,17 +72,20 @@ pub async fn run_server(host: &str, port: u16, mut settings: Settings) -> Result
             info!("Web 登录用户名 admin；口令保存在 config/.web-auth-token，远程访问请使用 HTTPS");
         }
     } else {
-        // 鉴权显式关闭：本系统可直接驱动真实下单、改写 OKX 密钥，
-        // 非回环监听 + 免登录等于把交易权限暴露给整个网络，拒绝启动。
+        // 鉴权被显式关闭：本系统可直接驱动真实下单、改写 OKX 密钥，
+        // 这里醒目告警。是否暴露由部署方自行决定（建议至少绑定回环
+        // 地址并用带认证的反向代理对外）。
         let loopback = is_loopback_host(host);
-        anyhow::ensure!(
-            loopback,
-            "安全拒绝启动：WEB_AUTH_ENABLED=false（鉴权关闭）且监听地址 {} 非回环地址。\
-             如需远程访问请开启鉴权（移除 WEB_AUTH_ENABLED=false 或设为 true），\
-             或改为绑定 127.0.0.1 后经带认证的反向代理对外。",
-            host
-        );
-        info!("Web 登录鉴权已显式关闭（仅本地回环 {}），可直接访问 http://{}:{}", host, host, port);
+        if loopback {
+            info!("Web 登录鉴权已显式关闭（仅本地回环 {}），可直接访问 http://{}:{}", host, host, port);
+        } else {
+            warn!(
+                "⚠️⚠️⚠️ Web 登录鉴权已关闭且服务绑定在非回环地址 {}:{}！\
+                 任何能访问该端口的人都可以直接驱动真实下单、修改 OKX 密钥、保存 .env。\
+                 建议改为绑定 127.0.0.1 并经带认证的反向代理对外。",
+                host, port
+            );
+        }
     }
     let service = Arc::new(WebTradingService::new(settings.clone()));
 
